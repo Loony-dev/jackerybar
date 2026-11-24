@@ -1,98 +1,101 @@
-// Popover panel shown when the menu bar item is clicked.
+// The popup: page router, main page (station switcher, header, hero, power card, chart, tiles, footer).
 
 import SwiftUI
-import ServiceManagement
-
-final class PanelModel: ObservableObject {
-    @Published var tick = 0
-    var station: Station?
-    var connError: String?
-    var demo = false
-    /// Title shown in the popup header.
-    var stationName = "Jackery SolarVault 3"
-    var onOpenConfig: () -> Void = {}
-    var onReload: () -> Void = {}
-    /// Saves a config; returns an error message on failure.
-    var onSave: (Config) -> String? = { _ in nil }
-    var onLayoutChange: () -> Void = {}
-    /// Switches the UI language right away and remembers it in config.json.
-    var onLanguage: (Lang) -> Void = { _ in }
-
-    @Published var detail: Metric? { didSet { DispatchQueue.main.async { self.onLayoutChange() } } }
-    @Published var detailRange: TimeInterval = 3600
-    @Published var showOutages = false { didSet { DispatchQueue.main.async { self.onLayoutChange() } } }
-    /// Selected outage (its start time) on the outage page.
-    @Published var outageStart: Double? { didSet { DispatchQueue.main.async { self.onLayoutChange() } } }
-
-    @Published var showSettings = false { didSet { DispatchQueue.main.async { self.onLayoutChange() } } }
-    @Published var draft = SettingsDraft()
-    @Published var settingsError: String? { didSet { DispatchQueue.main.async { self.onLayoutChange() } } }
-
-    func openSettings() {
-        draft = Config.loadRaw().map(SettingsDraft.init) ?? SettingsDraft()
-        settingsError = nil
-        showSettings = true
-    }
-
-    func closeSettings() {
-        settingsError = nil
-        showSettings = false
-    }
-
-    func saveSettings() {
-        switch draft.build() {
-        case .failure(let e): settingsError = e.message
-        case .success(let cfg):
-            if let err = onSave(cfg) { settingsError = err } else { closeSettings() }
-        }
-    }
-}
-
-enum Palette {
-    static let green = Color(red: 0.30, green: 0.82, blue: 0.50)
-    static let amber = Color(red: 1.00, green: 0.72, blue: 0.25)
-    static let red = Color(red: 1.00, green: 0.38, blue: 0.33)
-    static let discharge = Color(red: 1.00, green: 0.58, blue: 0.28)
-
-    static func forSoc(_ soc: Double) -> Color { soc >= 50 ? green : soc >= 20 ? amber : red }
-}
 
 struct PanelView: View {
     @ObservedObject var model: PanelModel
+    /// Measuring pass: no ScrollView, so the natural height can be read.
+    var measuring = false
 
     var body: some View {
         let _ = model.tick
+        if measuring || Snapshot.active {
+            content
+        } else {
+            ScrollView(.vertical) { content }
+                .scrollIndicators(.automatic)
+                .scrollBounceBehavior(.basedOnSize)
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if model.showSettings {
-                SettingsView(model: model)
-            } else if model.showOutages, let st = model.station {
-                if let start = model.outageStart, let o = st.grid.outage(start: start) {
-                    OutageDetailView(model: model, st: st, outage: o)
-                } else {
-                    OutagesView(model: model, st: st)
-                }
-            } else if let m = model.detail, let st = model.station {
-                DetailView(model: model, st: st, metric: m)
-            } else {
-            if let st = model.station {
-                // Station is a mutable class passed by reference: SwiftUI would treat these
-                // views as unchanged and never re-render them, so rebuild them on every data tick.
-                Group {
-                    Header(st: st, name: model.stationName, error: model.connError, demo: model.demo)
-                    Hero(st: st, open: { model.detail = $0 })
-                    GridCard(log: st.grid, open: { model.showOutages = true })
-                    PowerChart(st: st, open: { model.detail = .battery })
-                    Tiles(st: st, open: { model.detail = $0 })
-                }
-                .id(model.tick)
-            } else {
-                Unconfigured(open: model.openSettings)
-            }
-            Footer(st: model.station, model: model)
-            }
+            page
         }
         .padding(16)
         .frame(width: 344)
+    }
+
+    @ViewBuilder
+    private var page: some View {
+        switch model.page {
+        case .settings:
+            SettingsView(model: model)
+        case .metric(let m) where model.station != nil:
+            MetricPage(model: model, st: model.station!, metric: m)
+        case .outages where model.station != nil:
+            OutagesView(model: model, st: model.station!)
+        case .outage(let start) where model.station?.grid.outage(start: start) != nil:
+            OutageDetailView(model: model, st: model.station!, outage: model.station!.grid.outage(start: start)!)
+        case .stats where model.station != nil:
+            StatsPage(model: model, st: model.station!)
+        case .control where model.station != nil:
+            ControlPage(model: model, st: model.station!)
+        default:
+            mainPage
+        }
+    }
+
+    @ViewBuilder
+    private var mainPage: some View {
+        if let st = model.station {
+            // Station is a mutable class passed by reference: SwiftUI would treat these
+            // views as unchanged and never re-render them, so rebuild them on every data tick.
+            Group {
+                if model.hub.stations.count > 1 {
+                    StationSwitcher(stations: model.hub.stations, selected: st.sn) { model.hub.select($0) }
+                }
+                Header(st: st, error: model.hub.connError, demo: model.hub.isDemo && !Snapshot.active)
+                Hero(st: st, open: { model.open(.metric($0)) })
+                GridCard(log: st.grid, open: { model.open(.outages) })
+                PowerChart(st: st, open: { model.open(.metric(.battery)) })
+                Tiles(st: st, open: { model.open(.metric($0)) })
+            }
+            .id(model.tick)
+        } else {
+            Unconfigured(open: model.openSettings)
+        }
+        Footer(st: model.station, model: model)
+    }
+}
+
+// MARK: - Station switcher
+
+private struct StationSwitcher: View {
+    let stations: [Station]
+    let selected: String
+    let select: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(stations, id: \.sn) { st in
+                Button { select(st.sn) } label: {
+                    HStack(spacing: 5) {
+                        Circle().fill(st.isStale ? Color.secondary : Palette.forSoc(st.soc ?? 0)).frame(width: 6, height: 6)
+                        Text(st.name).lineLimit(1)
+                        Text(st.soc.map { "\(Int($0.rounded()))%" } ?? "—").foregroundStyle(.secondary).monospacedDigit()
+                        if st.grid.isOn == false { Image(systemName: "lightbulb.slash.fill").foregroundStyle(Palette.red) }
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .frame(maxWidth: .infinity)
+                    .background(st.sn == selected ? Color.primary.opacity(0.14) : Color.primary.opacity(0.05), in: Capsule())
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(st.sn)
+            }
+        }
     }
 }
 
@@ -100,15 +103,15 @@ struct PanelView: View {
 
 private struct Header: View {
     let st: Station
-    let name: String
     let error: String?
     let demo: Bool
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(name)
+                Text(st.name)
                     .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
                 Text(demo ? L("демо-режим", "demo mode") : st.sn)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -119,13 +122,14 @@ private struct Header: View {
     }
 
     private var state: StatusPill.State {
-        if error != nil { return .error }
+        if error != nil || st.tokenRejected { return .error }
         if st.lastUpdate == nil || st.isStale { return .waiting }
         return .online
     }
 
     private var stateText: String {
         if error != nil { return L("немає брокера", "no broker") }
+        if st.tokenRejected { return L("невірний токен", "wrong token") }
         if st.lastUpdate == nil { return L("чекаємо станцію", "waiting for station") }
         if st.isStale { return Fmt.ago(st.lastUpdate) }
         return L("онлайн", "online")
@@ -258,7 +262,7 @@ private struct PowerChart: View {
 
     var body: some View {
         let now = Date().timeIntervalSince1970
-        let pts = st.store.buckets(.battery, from: now - 3600, to: now, count: 156) { $0 }
+        let pts = st.store.buckets(.battery, from: now - 3600, to: now, count: 156)
         Button(action: open) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
@@ -429,22 +433,26 @@ private struct Footer: View {
             Divider()
             HStack(spacing: 6) {
                 if let st {
-                    Text(L("Розряд до \(Int(st.minSoc))% · заряд до \(Int(st.maxSoc))% · \(Fmt.ago(st.lastUpdate))", "Discharge to \(Int(st.minSoc))% · charge to \(Int(st.maxSoc))% · \(Fmt.ago(st.lastUpdate))"))
+                    Text(L("Розряд до \(Int(st.minSoc))% · заряд до \(Int(st.maxSoc))% · \(Fmt.ago(st.lastUpdate))",
+                           "Discharge to \(Int(st.minSoc))% · charge to \(Int(st.maxSoc))% · \(Fmt.ago(st.lastUpdate))"))
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
                 Spacer()
             }
-            HStack(spacing: 4) {
+            HStack(spacing: 2) {
                 LanguagePicker(current: Lang.current) { model.onLanguage($0) }
                 Spacer()
+                if st != nil {
+                    IconButton(symbol: "chart.bar.xaxis", help: L("Статистика", "Statistics")) { model.open(.stats) }
+                    IconButton(symbol: "slider.horizontal.3", help: L("Керування станцією", "Station control")) { model.open(.control) }
+                }
                 IconButton(symbol: "gearshape", help: L("Налаштування", "Settings"), action: model.openSettings)
                 IconButton(symbol: "arrow.clockwise", help: L("Перепідключитися", "Reconnect"), action: model.onReload)
                 IconButton(symbol: "power", help: L("Вийти", "Quit")) { NSApp.terminate(nil) }
             }
         }
     }
-
 }
 
 /// Compact "УКР | EN" switch in the footer; applies immediately.
@@ -472,155 +480,3 @@ private struct LanguagePicker: View {
     }
 }
 
-private struct IconButton: View {
-    let symbol: String
-    let help: String
-    let action: () -> Void
-    @State private var hover = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 12, weight: .regular))
-                .frame(width: 26, height: 22)
-                .background(Color.primary.opacity(hover ? 0.1 : 0), in: RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .help(help)
-        .onHover { hover = $0 }
-    }
-}
-
-// MARK: - Popup window (replaces NSPopover, which mis-sizes self-resizing SwiftUI content)
-
-final class PopupWindow<Content: View> {
-    private final class Panel: NSPanel {
-        override var canBecomeKey: Bool { true }
-    }
-
-    private let window: Panel
-    private let hosting: NSHostingView<Content>
-    private weak var anchor: NSStatusBarButton?
-    private var monitors: [Any] = []
-    private let gap: CGFloat = 6
-    private let margin: CGFloat = 8
-
-    var isVisible: Bool { window.isVisible }
-    /// Called on Escape; return true if handled (popup stays open).
-    var onEscape: () -> Bool = { false }
-    private let blur = NSVisualEffectView()
-    private let tint = NSView()
-
-    /// "dark" (default), "light" or "system".
-    var theme: String = "dark" { didSet { applyTheme() } }
-
-    private func applyTheme() {
-        switch theme {
-        case "light": window.appearance = NSAppearance(named: .aqua)
-        case "system": window.appearance = nil
-        default: window.appearance = NSAppearance(named: .darkAqua)
-        }
-        // Dark theme: deeper, almost black glass instead of the grey popover material.
-        let dark = theme != "light" && (theme != "system" || NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
-        blur.material = dark ? .hudWindow : .popover
-        tint.layer?.backgroundColor = NSColor.black.withAlphaComponent(dark ? 0.45 : 0).cgColor
-    }
-
-    init(root: Content) {
-        hosting = NSHostingView(rootView: root)
-        hosting.translatesAutoresizingMaskIntoConstraints = false
-        // The window size is managed by fitToContent(); don't let SwiftUI resize it on its own.
-        hosting.sizingOptions = []
-
-        window = Panel(contentRect: NSRect(x: 0, y: 0, width: 344, height: 400),
-                       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = true
-        window.level = .popUpMenu
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
-        window.isReleasedWhenClosed = false
-        window.hidesOnDeactivate = false
-
-        blur.material = .hudWindow
-        blur.blendingMode = .behindWindow
-        blur.state = .active
-        blur.wantsLayer = true
-        blur.layer?.cornerRadius = 14
-        blur.layer?.cornerCurve = .continuous
-        blur.layer?.masksToBounds = true
-        blur.layer?.borderWidth = 0.5
-        blur.layer?.borderColor = NSColor.separatorColor.cgColor
-        tint.wantsLayer = true
-        tint.frame = blur.bounds
-        tint.autoresizingMask = [.width, .height]
-        blur.addSubview(tint)
-        blur.addSubview(hosting)
-        NSLayoutConstraint.activate([
-            hosting.leadingAnchor.constraint(equalTo: blur.leadingAnchor),
-            hosting.trailingAnchor.constraint(equalTo: blur.trailingAnchor),
-            hosting.topAnchor.constraint(equalTo: blur.topAnchor),
-            hosting.bottomAnchor.constraint(equalTo: blur.bottomAnchor),
-        ])
-        window.contentView = blur
-        applyTheme()
-    }
-
-    /// Horizontal position is fixed while the popup is open: the status item's width changes
-    /// with its text, and re-centring on every update makes the window jitter.
-    private var pinnedX: CGFloat?
-
-    func show(below button: NSStatusBarButton) {
-        anchor = button
-        pinnedX = nil
-        fitToContent()
-        window.alphaValue = 0
-        window.orderFrontRegardless()
-        window.makeKey()
-        NSAnimationContext.runAnimationGroup { $0.duration = 0.12; window.animator().alphaValue = 1 }
-
-        // Close on any click outside the window, on Escape, or when another app takes focus.
-        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            self?.close()
-        } as Any)
-        monitors.append(NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
-            if e.keyCode == 53 {
-                if self?.onEscape() != true { self?.close() }
-                return nil
-            }
-            return e
-        } as Any)
-    }
-
-    func close() {
-        guard window.isVisible else { return }
-        monitors.forEach { NSEvent.removeMonitor($0) }
-        monitors.removeAll()
-        window.orderOut(nil)
-    }
-
-    /// Sizes the window to the SwiftUI content and pins it right under the status item,
-    /// clamped to the visible area of that screen.
-    func fitToContent() {
-        guard let button = anchor, let bw = button.window else { return }
-        // Measure the SwiftUI content itself; the hosting view's fittingSize just echoes the window size.
-        let measured = NSHostingController(rootView: hosting.rootView)
-            .sizeThatFits(in: NSSize(width: 344, height: 4000))
-        let size = NSSize(width: 344, height: ceil(measured.height))
-        let anchorRect = bw.convertToScreen(button.convert(button.bounds, to: nil))
-        let screen = bw.screen ?? NSScreen.main
-        let visible = screen?.visibleFrame ?? .zero
-
-        var x = pinnedX ?? (anchorRect.midX - size.width / 2)
-        x = min(max(x, visible.minX + margin), visible.maxX - size.width - margin)
-        pinnedX = x
-        let top = min(anchorRect.minY - gap, visible.maxY - gap)
-        let height = min(size.height, top - visible.minY - margin)
-        let frame = NSRect(x: x, y: top - height, width: size.width, height: height)
-        if window.frame != frame { window.setFrame(frame, display: true) }
-        if CommandLine.arguments.contains("--debug") {
-            FileHandle.standardError.write("[popup] anchor=\(anchorRect) visible=\(visible) content=\(size) frame=\(frame)\n".data(using: .utf8)!)
-        }
-    }
-}

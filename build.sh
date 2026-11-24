@@ -10,7 +10,7 @@ rm -rf build && mkdir -p "$APP/Contents/MacOS" build/obj
 
 for arch in arm64 x86_64; do
   swiftc -O -swift-version 5 -target $arch-apple-macos14 \
-    -o build/obj/JackeryBar-$arch Sources/*.swift
+    -o build/obj/JackeryBar-$arch Sources/Core/*.swift Sources/UI/*.swift
 done
 lipo -create build/obj/JackeryBar-arm64 build/obj/JackeryBar-x86_64 -output "$APP/Contents/MacOS/JackeryBar"
 rm -rf build/obj

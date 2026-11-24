@@ -1,134 +1,6 @@
-// Mains (grid) presence: outage detection, outage log (JSON), main-page card and history page.
+// Outage UI: the "Power" card on the main page, the week/outage list page and a page per outage.
 
 import SwiftUI
-
-extension Station {
-    /// Is mains power present? From the station's own `ongridStat` (1 = on-grid, 0 = off-grid);
-    /// if a firmware doesn't send it, power drawn from the grid also proves it's there.
-    /// "0 W from grid" alone is NOT treated as an outage — the station may just not be using it.
-    var gridPresent: Bool? {
-        if let s = v("ongridStat") { return s >= 1 }
-        if let g = gridNet, g > 5 { return true }
-        return nil
-    }
-}
-
-final class GridLog {
-    struct Outage: Codable {
-        var start: Double
-        var end: Double?
-        /// Start is only known approximately (the app was started during the outage).
-        var approx: Bool?
-        /// One-minute data captured while the 24 h history still covered this outage.
-        var series: OutageSeries?
-        var duration: Double { (end ?? Date().timeIntervalSince1970) - start }
-    }
-
-    func setSeries(_ s: OutageSeries, forStart start: Double) {
-        if let i = outages.firstIndex(where: { $0.start == start }) { outages[i].series = s }
-    }
-
-    func outage(start: Double) -> Outage? { outages.first { $0.start == start } }
-
-    private(set) var outages: [Outage] = []
-    /// Debounced state: nil until known.
-    private(set) var isOn: Bool?
-    /// When the current state began, if known.
-    private(set) var since: Double?
-    /// When outage tracking started (before that nothing is known).
-    private(set) var trackingSince: Double?
-
-    /// Fired on a real change (not on the first reading after start): (isOn, the outage that just ended).
-    var onChange: ((Bool, Outage?) -> Void)?
-
-    private var candidate: Bool?
-    private var candidateCount = 0
-    private var candidateSince = 0.0
-    static let keepDays = 90.0
-
-    /// Feed every reading; the state flips after 2 agreeing readings (~10 s) to ignore blips.
-    func update(_ present: Bool?, at t: Double = Date().timeIntervalSince1970) {
-        guard let present else { return }
-        if trackingSince == nil { trackingSince = t }
-        if present == isOn { candidate = nil; return }
-        if candidate != present { candidate = present; candidateCount = 0; candidateSince = t }
-        candidateCount += 1
-        guard candidateCount >= 2 else { return }
-        let first = isOn == nil
-        let when = candidateSince
-        isOn = present
-        candidate = nil
-
-        if present {
-            if let i = outages.indices.last, outages[i].end == nil {
-                outages[i].end = when
-                since = when
-                if !first { onChange?(true, outages[i]) }
-            } else {
-                since = first ? outages.last?.end : when
-                if !first { onChange?(true, nil) }
-            }
-        } else {
-            if let last = outages.last, last.end == nil {
-                since = last.start          // app restarted during an outage it already knew about
-            } else {
-                outages.append(Outage(start: when, end: nil, approx: first ? true : nil))
-                since = when
-                if !first { onChange?(false, nil) }
-            }
-        }
-        trim()
-    }
-
-    private func trim() {
-        let cutoff = Date().timeIntervalSince1970 - Self.keepDays * 86400
-        outages.removeAll { ($0.end ?? .infinity) < cutoff }
-    }
-
-    /// Outages overlapping [from, to], clipped to it.
-    func outages(from: Double, to: Double) -> [(start: Double, end: Double)] {
-        let now = Date().timeIntervalSince1970
-        return outages.compactMap { o in
-            let s = max(o.start, from), e = min(o.end ?? now, to)
-            return e > s ? (s, e) : nil
-        }
-    }
-
-    func summary(from: Double, to: Double) -> (count: Int, total: Double, longest: Double) {
-        let parts = outages(from: from, to: to)
-        let total = parts.reduce(0) { $0 + ($1.end - $1.start) }
-        return (parts.count, total, parts.map { $0.end - $0.start }.max() ?? 0)
-    }
-
-    // --- persistence
-
-    private struct File: Codable { var v: Int; var trackingSince: Double?; var outages: [Outage] }
-
-    func save(to url: URL) {
-        guard let d = try? JSONEncoder().encode(File(v: 1, trackingSince: trackingSince, outages: outages)) else { return }
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? d.write(to: url, options: .atomic)
-    }
-
-    func load(from url: URL) {
-        guard let d = try? Data(contentsOf: url), let f = try? JSONDecoder().decode(File.self, from: d) else { return }
-        outages = f.outages.sorted { $0.start < $1.start }
-        trackingSince = f.trackingSince ?? outages.first?.start
-        trim()
-    }
-}
-
-extension Fmt {
-    /// Duration in seconds → "2ч 14м".
-    static func span(_ seconds: Double) -> String { duration(max(seconds, 60) / 3600) }
-
-    static func day(_ t: Double, _ format: String) -> String {
-        let f = DateFormatter()
-        f.locale = Lang.locale
-        f.dateFormat = format
-        return f.string(from: Date(timeIntervalSince1970: t))
-    }
-}
 
 // MARK: - Main-page card
 
@@ -194,18 +66,8 @@ struct OutagesView: View {
         let on = log.isOn
 
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Button { model.showOutages = false } label: {
-                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .semibold))
-                        .frame(width: 22, height: 22)
-                        .background(Color.primary.opacity(0.08), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .help(L("Назад", "Back"))
-                Image(systemName: "lightbulb.fill").foregroundStyle(Palette.amber)
-                Text(L("Світло", "Power")).font(.system(size: 14, weight: .semibold))
-                Spacer()
-            }
+            PageHeader(title: L("Світло", "Power"), subtitle: model.hub.stations.count > 1 ? st.name : nil,
+                       icon: "lightbulb.fill", tint: Palette.amber, back: model.back)
 
             HStack(alignment: .firstTextBaseline) {
                 Text(on == nil ? "—" : on! ? L("Є", "On") : L("Немає", "Off"))
@@ -220,10 +82,10 @@ struct OutagesView: View {
 
             WeekTimeline(log: log, now: now)
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                Stat(title: L("Відключень", "Outages"), value: "\(week.count)")
-                Stat(title: L("Без світла", "Without power"), value: week.count == 0 ? "—" : Fmt.span(week.total))
-                Stat(title: L("Найдовше", "Longest"), value: week.count == 0 ? "—" : Fmt.span(week.longest))
+            Grid3 {
+                StatCell(title: L("Відключень", "Outages"), value: "\(week.count)")
+                StatCell(title: L("Без світла", "Without power"), value: week.count == 0 ? "—" : Fmt.span(week.total))
+                StatCell(title: L("Найдовше", "Longest"), value: week.count == 0 ? "—" : Fmt.span(week.longest))
             }
             Text(L("за останні 7 днів", "last 7 days")).font(.system(size: 10)).foregroundStyle(.tertiary)
 
@@ -233,7 +95,7 @@ struct OutagesView: View {
                     ForEach(Array(recent.enumerated()), id: \.offset) { i, o in
                         if i > 0 { Divider().opacity(0.5) }
                         OutageRow(o: o, usedKWh: st.series(for: o)?.stats(duration: o.duration).usedKWh) {
-                            model.outageStart = o.start
+                            model.open(.outage(o.start))
                         }
                     }
                 }
@@ -268,7 +130,7 @@ private struct OutageRow: View {
                         .foregroundStyle(o.end == nil ? Palette.red : .secondary)
                     // Energy taken from the battery during this outage.
                     if let u = usedKWh, u > 0.005 {
-                        Text(u < 1 ? L("\(Int((u * 1000).rounded())) Вт·год", "\(Int((u * 1000).rounded())) Wh") : String(format: L("%.2f кВт·год", "%.2f kWh"), u))
+                        Text(Fmt.energy(kWh: u))
                             .font(.system(size: 9.5)).foregroundStyle(.tertiary).monospacedDigit()
                             .lineLimit(1).fixedSize()
                     }
@@ -337,17 +199,156 @@ private struct WeekTimeline: View {
     }
 }
 
-private struct Stat: View {
-    let title: String
-    let value: String
+// MARK: - Page
+
+struct OutageDetailView: View {
+    @ObservedObject var model: PanelModel
+    let st: Station
+    let outage: GridLog.Outage
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 13)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
+        let _ = model.tick
+        let now = Date().timeIntervalSince1970
+        let end = outage.end ?? now
+        let series = st.series(for: outage)
+        let s = series?.stats(duration: outage.duration)
+
+        VStack(alignment: .leading, spacing: 14) {
+            PageHeader(title: L("Відключення", "Outage"),
+                       subtitle: Fmt.day(outage.start, "d MMMM, HH:mm") + (outage.approx == true ? "≈" : "") + " – "
+                           + (outage.end.map { Fmt.clock($0) } ?? L("зараз", "now")),
+                       icon: "lightbulb.slash.fill", tint: Palette.red, back: model.back,
+                       trailing: outage.end == nil ? AnyView(
+                           Text(L("триває", "ongoing")).font(.system(size: 11, weight: .semibold))
+                               .padding(.horizontal, 8).padding(.vertical, 3)
+                               .background(Palette.red.opacity(0.16), in: Capsule())
+                               .foregroundStyle(Palette.red)) : nil)
+
+            // Duration + SOC drop
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(Fmt.span(outage.duration)).font(.system(size: 34, weight: .light)).monospacedDigit()
+                if let a = s?.socStart, let b = s?.socEnd {
+                    Text("\(Int(a.rounded()))% → \(Int(b.rounded()))%")
+                        .font(.system(size: 15)).foregroundStyle(.secondary).monospacedDigit()
+                }
+                Spacer()
+            }
+            if let a = s?.socStart, let b = s?.socEnd {
+                SocDropBar(start: a, end: b, minSoc: st.minSoc)
+            }
+
+            if let s {
+                Grid3 {
+                    Cell(L("Спожито", "Consumed"), kwh(s.consumedKWh), L("приладами", "by devices"))
+                    Cell(L("З батареї", "From battery"), kwh(s.usedKWh), s.socDrop.map { L("−\(Int($0.rounded()))% заряду", "−\(Int($0.rounded()))% charge") } ?? "")
+                    Cell(L("ККД", "Efficiency"), s.efficiency.map { "\(Int(($0 * 100).rounded()))%" } ?? "—", L("втрати \(kwh(max(0, s.usedKWh - s.consumedKWh)))", "losses \(kwh(max(0, s.usedKWh - s.consumedKWh)))"))
+                    Cell(L("Навантаж. мін", "Min load"), w(s.loadMin), "")
+                    Cell(L("Середнє", "Average"), w(s.loadAvg), "")
+                    Cell(L("Пік", "Peak"), w(s.loadMax), "")
+                    Cell(L("Витрата", "Drain"), s.socPerHour.map { String(format: L("%.1f%%/год", "%.1f%%/h"), $0) } ?? "—", L("заряду", "of charge"))
+                    Cell(L("Розряд макс", "Max discharge"), w(s.dischargeMax), L("батарея", "battery"))
+                    Cell(L("Темп.", "Temp."), tempRange(s), L("комірки", "cells"))
+                    if s.chargedKWh > 0.01 { Cell(L("Підзаряджено", "Recharged"), kwh(s.chargedKWh), L("сонце", "solar")) }
+                }
+                footnote(s, now: now)
+            } else {
+                Text(L("Немає даних за це відключення: застосунок тоді не працював.", "No data for this outage: the app wasn’t running."))
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+
+            if let series, series.ac.contains(where: { $0 != nil }) {
+                ChartBlock(title: L("Навантаження", "Load"), metric: .ac, values: series.ac, from: outage.start, to: end, cap: 0)
+                ChartBlock(title: L("Заряд", "Charge"), metric: .soc, values: series.soc, from: outage.start, to: end, cap: 0)
+                ChartBlock(title: L("Батарея", "Battery"), metric: .battery, values: series.bat, from: outage.start, to: end, cap: 0)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(9)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func kwh(_ v: Double) -> String { Fmt.energy(kWh: v) }
+    private func w(_ v: Double?) -> String { v.map { Fmt.watts($0) } ?? "—" }
+    private func tempRange(_ s: OutageStats) -> String {
+        guard let a = s.tempMin, let b = s.tempMax else { return "—" }
+        return abs(b - a) < 0.5 ? String(format: "%.0f °C", a) : String(format: "%.0f–%.0f °C", a, b)
+    }
+
+    @ViewBuilder
+    private func footnote(_ s: OutageStats, now: Double) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if outage.end == nil, let h = st.runtimeHours, h.isFinite {
+                Label(L("Батареї вистачить ще на ~\(Fmt.duration(h)) — до \(Fmt.clock(now + h * 3600))", "Battery lasts ~\(Fmt.duration(h)) more — until \(Fmt.clock(now + h * 3600))"),
+                      systemImage: "hourglass")
+                    .foregroundStyle(Palette.amber)
+            } else if let end = s.socEnd, let avg = s.dischargeAvg, avg > 5 {
+                let left = max(0, end - st.minSoc) / 100 * st.capacityWh / avg
+                Label(L("За такого навантаження вистачило б ще на ~\(Fmt.duration(left))", "At this load it would last ~\(Fmt.duration(left)) more"), systemImage: "hourglass")
+                    .foregroundStyle(.secondary)
+            }
+            if s.coverage < 0.9 {
+                Label(L("Дані є за \(Int((s.coverage * 100).rounded()))% часу відключення", "Data covers \(Int((s.coverage * 100).rounded()))% of the outage"), systemImage: "info.circle")
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .font(.system(size: 11))
+    }
+}
+
+private struct SocDropBar: View {
+    let start: Double
+    let end: Double
+    let minSoc: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.08))
+                // Reserve below the discharge limit.
+                Rectangle().fill(Palette.red.opacity(0.25)).frame(width: w * minSoc / 100)
+                // What was spent during the outage.
+                Rectangle().fill(Palette.discharge.opacity(0.45))
+                    .frame(width: w * max(0, start - end) / 100)
+                    .offset(x: w * min(start, end) / 100)
+                // What is left.
+                Rectangle().fill(Palette.forSoc(end)).frame(width: w * min(start, end) / 100)
+            }
+            .clipShape(Capsule())
+        }
+        .frame(height: 8)
+    }
+}
+
+/// Stat tile with a caption line.
+private func Cell(_ title: String, _ value: String, _ caption: String) -> StatCell {
+    StatCell(title: title, value: value, caption: caption)
+}
+
+private struct ChartBlock: View {
+    let title: String
+    let metric: Metric
+    let values: [Double?]
+    let from: Double
+    let to: Double
+    let cap: Double
+
+    var body: some View {
+        let pts = downsample(values, to: 156)
+        let dom = SeriesChart.domain(for: metric, points: pts, capacityKWh: cap)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Image(systemName: metric.icon).font(.system(size: 10)).foregroundStyle(metric.tint)
+                Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                Spacer()
+                Text(metric.axis(dom.lowerBound) + " … " + metric.axis(dom.upperBound))
+                    .font(.system(size: 9)).foregroundStyle(.tertiary).monospacedDigit()
+            }
+            SeriesChart(points: pts, metric: metric, domain: dom, interactive: true, from: from, to: to)
+                .frame(height: 64)
+            HStack {
+                Text(Fmt.clock(from)); Spacer(); Text(Fmt.clock(from + (to - from) / 2)); Spacer(); Text(Fmt.clock(to))
+            }
+            .font(.system(size: 9)).foregroundStyle(.tertiary)
+        }
+        .padding(.top, 10).padding([.horizontal, .bottom], 10)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }

@@ -25,7 +25,11 @@ allow_anonymous false
 password_file $ETC/passwd
 persistence false
 log_dest stdout
+# JackeryBar finds stations in this log: a station connects with its serial number as client id.
+log_dest file $PREFIX/var/log/mosquitto.log
+connection_messages true
 CONF
+mkdir -p $PREFIX/var/log
 
 rm -f $ETC/passwd
 $PREFIX/opt/mosquitto/bin/mosquitto_passwd -b -c $ETC/passwd "$USER_NAME" "$PASS"
