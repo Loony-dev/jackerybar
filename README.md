@@ -25,6 +25,7 @@
 > [!NOTE]
 > Це неофіційний проєкт, він не пов’язаний із Jackery. Протокол узято з
 > [офіційної інтеграції Jackery для Home Assistant](https://github.com/Jackery-Official/jackery) (MIT).
+> Повний опис протоколу (поля, команди, приклади) — у [jackery-local-mqtt](https://github.com/Loony-dev/jackery-local-mqtt).
 
 ---
 
@@ -162,6 +163,8 @@
 2. JackeryBar тримає одне підключення до брокера для всіх станцій і кожні 5 секунд просить кожну надіслати дані: запити `type 25` і `type 105` у `hb/device/<SN>/action`.
 3. Станції відповідають у `hb/device/<SN>/status` та `…/event`. Кожен запит містить токен із застосунку Jackery. На невірний токен станція відповідає помилкою 401, і віджет це показує.
 4. Команди керування надсилаються як `type 1 / cmd 5` (як в офіційній інтеграції).
+
+Усі поля, команди й приклади повідомлень описано в окремому репозиторії [jackery-local-mqtt](https://github.com/Loony-dev/jackery-local-mqtt).
 
 Хмара Jackery не потрібна. MQTT-клієнт вбудований (MQTT 3.1.1 поверх `Network.framework`), сторонніх залежностей немає.
 
@@ -396,6 +399,7 @@ scripts/
 
 ## Подяки
 
+- [jackery-local-mqtt](https://github.com/Loony-dev/jackery-local-mqtt): наш опис локального MQTT-протоколу українською та англійською.
 - [Jackery-Official/jackery](https://github.com/Jackery-Official/jackery): офіційна інтеграція для Home Assistant, джерело протоколу (MIT).
 - [Bigdaddy1990/jackery_solarvault](https://github.com/Bigdaddy1990/jackery_solarvault) та [steinhuegel/ioBroker.jackery-solarvault](https://github.com/steinhuegel/ioBroker.jackery-solarvault): опис полів і моделей.
 - [Koly Ye](https://github.com/vkardin/koly) (MIT): нормалізовані графіки відключень по областях.

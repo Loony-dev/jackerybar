@@ -25,6 +25,7 @@
 > [!NOTE]
 > Unofficial project, not affiliated with Jackery. The protocol comes from
 > [Jackery's official Home Assistant integration](https://github.com/Jackery-Official/jackery) (MIT).
+> The full protocol description (fields, commands, examples) is in [jackery-local-mqtt](https://github.com/Loony-dev/jackery-local-mqtt).
 
 ---
 
@@ -162,6 +163,8 @@ Screenshots use demo data (`./scripts/screenshots.sh`).
 2. JackeryBar keeps one broker connection for all stations and asks each for data every 5 seconds: `type 25` and `type 105` requests on `hb/device/<SN>/action`.
 3. Stations answer on `hb/device/<SN>/status` and `…/event`. Every request carries the token from the Jackery app. A wrong token gets a 401 error, which the widget shows.
 4. Control commands are sent as `type 1 / cmd 5`, like the official integration.
+
+Every field, command and sample message is documented in a separate repository, [jackery-local-mqtt](https://github.com/Loony-dev/jackery-local-mqtt).
 
 The Jackery cloud isn't needed. The MQTT client is built in (MQTT 3.1.1 on `Network.framework`), with no third-party dependencies.
 
@@ -396,6 +399,7 @@ scripts/
 
 ## Credits
 
+- [jackery-local-mqtt](https://github.com/Loony-dev/jackery-local-mqtt): our description of the local MQTT protocol in Ukrainian and English.
 - [Jackery-Official/jackery](https://github.com/Jackery-Official/jackery): the official Home Assistant integration and the source of the protocol (MIT).
 - [Bigdaddy1990/jackery_solarvault](https://github.com/Bigdaddy1990/jackery_solarvault) and [steinhuegel/ioBroker.jackery-solarvault](https://github.com/steinhuegel/ioBroker.jackery-solarvault): field and model references.
 - [Koly Ye](https://github.com/vkardin/koly) (MIT): normalized outage schedules by region.
