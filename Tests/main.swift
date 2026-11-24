@@ -259,6 +259,182 @@ test("discovery parses Mosquitto connection log") {
     check(!Discovery.looksLikeSerial("jackerybar-1A2B3C4D") && !Discovery.looksLikeSerial("ABCDEFGHIJKLMN"))
 }
 
+// MARK: - Planned outages
+
+test("koly schedule: absolute times, merge across midnight, maybe") {
+    let json = #"""
+    {"id":"khmelnytskyi","provider":"khmelnytskoblenergo","sourceUrl":"https://hoe.com.ua/x","fetchedAt":"2026-11-24T20:31:13+02:00",
+     "updatedAt":"2026-11-24T20:19:00+02:00","status":"ok","emergency":{"active":false,"note":null,"since":null},
+     "days":[{"date":"2026-11-24","groups":{"1.1":[{"from":"04:00","to":"07:00","type":"off"},{"from":"22:00","to":"24:00","type":"off"}],
+                                             "2.1":[{"from":"12:00","to":"13:00","type":"maybe"}]}},
+             {"date":"2026-11-25","groups":{"1.1":[{"from":"00:00","to":"02:00","type":"off"},{"from":"16:00","to":"20:00","type":"off"}]}}]}
+    """#
+    let s = try JSONDecoder().decode(RegionSchedule.self, from: Data(json.utf8))
+    check(s.groups == ["1.1", "2.1"])
+    let o = s.outages(group: "1.1")
+    check(o.count == 3, "22–24 and 00–02 merge: \(o.count)")
+    let kyiv = RegionSchedule.kyivCalendar
+    check(kyiv.component(.hour, from: o[0].start) == 4 && kyiv.component(.hour, from: o[0].end) == 7)
+    check(o[1].duration == 4 * 3600, "22:00–02:00 = 4 h")
+    check(s.outages(group: "2.1").first?.maybe == true)
+    check(s.updated != nil)
+    check(RegionSchedule.groupLess("1.2", "2.1") && RegionSchedule.groupLess("2.1", "10.1"))
+}
+
+test("frankov today/tomorrow → same model") {
+    let today = #"{"date":"2026-11-24","is_today":true,"last_updated":"2026-11-24T20:54:53.220540+02:00","queues":{"1.1":{"intervals":[{"start":"04:00","end":"07:00","type":"base"}]}}}"#
+    let tomorrow = #"{"date":"2026-11-25","available":true,"queues":{"1.1":{"intervals":[{"start":"06:00","end":"09:00","type":"base"}]}}}"#
+    let none = #"{"date":"2026-11-26","available":false,"queues":{}}"#
+    let s = RegionSchedule.fromFrankov([Data(today.utf8), Data(tomorrow.utf8), Data(none.utf8)])!
+    check(s.days.count == 2 && s.feed == "frankov" && s.outages(group: "1.1").count == 2)
+    check(s.updated != nil, "fractional seconds handled")
+}
+
+test("forecast: charge before the outage, then runtime at the current load") {
+    let st = Station(config: StationConfig(deviceSn: "HS2C0TEST00001", token: "t"))
+    let now = Date()
+    // Charging at 1000 W from 50 %, 2.52 kWh, load 200 W, limits 10…100 %.
+    st.inject(values: ["soc": 50, "socDischgLimit": 10, "socChgLimit": 100, "batInPw": 1000, "swEpsOutPw": 200, "batNum": 0],
+              net: 1000, load: 200, at: now)
+    let o = PlannedOutage(start: now + 3600, end: now + 3 * 3600, maybe: false)
+    let f = st.forecast(o, now: now)!
+    check(near(f.socAtStart, 50 + 1000.0 / 2520 * 100, 0.1), "\(f.socAtStart)")
+    let draw = st.loss.batteryDraw(output: 200)
+    check(near(f.runtimeHours, (f.socAtStart - 10) / 100 * 2520 / draw, 0.01))
+    check(f.outageHours == 2 && f.enough)
+    // Nearly empty and discharging hard: not enough.
+    st.inject(values: ["soc": 14, "socDischgLimit": 10, "batOutPw": 900, "swEpsOutPw": 820], net: -900, load: 820, at: now)
+    let g = st.forecast(PlannedOutage(start: now + 600, end: now + 4 * 3600, maybe: false), now: now)!
+    check(!g.enough && g.socAtStart < 14)
+}
+
+test("forecast steps through the plan: recharge between outages") {
+    let st = Station(config: StationConfig(deviceSn: "HS2C0TEST00001", token: "t"))
+    let now = Date()
+    // Outage now at 500 W from 60 %; grid back in 1 h; next outage 10 h later.
+    st.inject(values: ["soc": 60, "socDischgLimit": 10, "socChgLimit": 100, "batOutPw": 500, "swEpsOutPw": 460, "ongridStat": 0, "batNum": 0],
+              net: -500, load: 460, at: now)
+    let plan = [PlannedOutage(start: now - 1800, end: now + 3600, maybe: false),
+                PlannedOutage(start: now + 11 * 3600, end: now + 15 * 3600, maybe: false)]
+    let f = st.forecasts(plan, now: now)
+    check(f.count == 2 && f[0] != nil && f[1] != nil)
+    check(near(f[0]!.socAtStart, 60) && near(f[0]!.outageHours, 1, 0.01), "current outage: from now")
+    check(f[1]!.socAtStart > 99, "recharged to the limit before the next one: \(f[1]!.socAtStart)")
+    check(f[1]!.enough)
+}
+
+test("queue is changed in place for the station") {
+    let hub = Hub()
+    let st = Station(config: StationConfig(deviceSn: "HS2C0TEST00001", token: "t"))
+    hub.showPreview([st], selected: st.sn)
+    check(st.config.scheduleRegion == nil)
+    hub.setQueue(st.sn, region: "khmelnytskyi", queue: "2.1")
+    check(st.config.queue == "2.1" && st.config.scheduleRegion == "khmelnytskyi")
+    check(hub.config?.stations.first?.queue == "2.1")
+    hub.setQueue(st.sn, region: nil, queue: nil)
+    check(st.config.queue == nil && st.config.region == nil)
+}
+
+test("schedule diff: changed, added, removed, published, hours") {
+    func sched(_ days: [(String, [(String, String, String)])]) -> RegionSchedule {
+        RegionSchedule(id: "khmelnytskyi", provider: "p", sourceUrl: "", fetchedAt: "", updatedAt: "", status: "ok", emergency: nil,
+                       days: days.map { d in .init(date: d.0, groups: ["1.1": d.1.map { .init(from: $0.0, to: $0.1, type: $0.2) }]) }, feed: nil)
+    }
+    let old = sched([("2026-11-24", [("04:00", "07:00", "off"), ("19:00", "22:00", "off")])])
+    let new = sched([("2026-11-24", [("04:00", "07:00", "off"), ("18:00", "22:00", "off"), ("23:00", "24:00", "off")]),
+                     ("2026-11-25", [("06:00", "09:00", "off")])])
+    let ch = ScheduleChange.diff(old: old, new: new, group: "1.1", today: "2026-11-24")
+    check(!ch.isEmpty && !ch.isOnlyPublication && ch.days.count == 2)
+    let d = ch.days[0]
+    check(d.changed.count == 1 && d.changed[0].old.from == 19 * 60 && d.changed[0].new.from == 18 * 60)
+    check(d.added.count == 1 && d.added[0].from == 23 * 60 && d.removed.isEmpty)
+    check(d.hoursBefore == 6 && d.hoursAfter == 8)
+    check(ch.days[1].published && ch.days[1].spans.count == 1)
+    Lang.current = .uk
+    let lines = ch.lines(today: "2026-11-24", tomorrow: "2026-11-25")
+    check(lines[0] == "Сьогодні: 19:00–22:00 → 18:00–22:00; додано 23:00–24:00. Без світла 6 → 8 год.", lines[0])
+    check(lines[1] == "Завтра: графік опубліковано — 06:00–09:00.", lines[1])
+    // Cancelled, and past days are ignored.
+    let cancel = ScheduleChange.diff(old: new, new: sched([("2026-11-25", [])]), group: "1.1", today: "2026-11-25")
+    check(cancel.days.count == 1 && cancel.days[0].removed.count == 1)
+    check(ScheduleChange.diff(old: old, new: old, group: "1.1", today: "2026-11-24").isEmpty)
+    check(ScheduleChange.diff(old: nil, new: new, group: "1.1", today: "2026-11-24").isEmpty, "first copy: nothing to compare")
+    // Only tomorrow appeared → publication.
+    let pub = ScheduleChange.diff(old: old, new: sched([("2026-11-24", [("04:00", "07:00", "off"), ("19:00", "22:00", "off")]), ("2026-11-25", [])]),
+                                  group: "1.1", today: "2026-11-24")
+    check(pub.isOnlyPublication)
+}
+
+test("hub reports schedule changes per station queue") {
+    let hub = Hub()
+    let a = Station(config: StationConfig(deviceSn: "HS2C0TEST00001", token: "t", region: "khmelnytskyi", queue: "1.1"))
+    let b = Station(config: StationConfig(deviceSn: "HS2C0TEST00002", token: "t", region: "khmelnytskyi", queue: "2.1"))
+    hub.showPreview([a, b], selected: a.sn)
+    var got: [String] = []
+    hub.onScheduleChanged = { st, _ in got.append(st.sn) }
+    let today = RegionSchedule.dayString()
+    func s(_ to11: String) -> RegionSchedule {
+        RegionSchedule(id: "khmelnytskyi", provider: "p", sourceUrl: "", fetchedAt: "", updatedAt: "", status: "ok", emergency: nil,
+                       days: [.init(date: today, groups: ["1.1": [.init(from: "10:00", to: to11, type: "off")],
+                                                          "2.1": [.init(from: "12:00", to: "14:00", type: "off")]])], feed: nil)
+    }
+    hub.scheduleChanged("khmelnytskyi", old: s("12:00"), new: s("13:00"))
+    check(got == ["HS2C0TEST00001"], "only the queue that changed: \(got)")
+    check(a.lastScheduleChange != nil && b.lastScheduleChange == nil)
+}
+
+test("source cross-check finds disagreements per queue") {
+    func sched(_ feed: String, _ g42: [(String, String)]) -> RegionSchedule {
+        RegionSchedule(id: "khmelnytskyi", provider: "p", sourceUrl: "", fetchedAt: "", updatedAt: "", status: "ok", emergency: nil,
+                       days: [.init(date: "2026-11-24", groups: ["4.2": g42.map { .init(from: $0.0, to: $0.1, type: "off") },
+                                                                 "1.1": [.init(from: "04:00", to: "07:00", type: "off")]])], feed: feed)
+    }
+    // The real case from 24.11: Koly merged the intraday update into 16–24, the other parser lost 22–24.
+    let koly = sched("koly", [("07:00", "12:00"), ("16:00", "24:00")])
+    let fr = sched("frankov", [("07:00", "12:00"), ("16:00", "20:00")])
+    let d = SourceDisagreement.compare(koly, fr, group: "4.2", today: "2026-11-24")
+    check(d.count == 1 && d[0].primaryFeed == "Koly Ye" && d[0].secondaryFeed == "khm_outage_parser")
+    check(d[0].primary.last?.to == 24 * 60 && d[0].secondary.last?.to == 20 * 60)
+    check(SourceDisagreement.compare(koly, fr, group: "1.1", today: "2026-11-24").isEmpty, "same for 1.1")
+    check(SourceDisagreement.compare(koly, fr, group: "4.2", today: "2026-11-25").isEmpty, "past days ignored")
+    let svc = ScheduleService()
+    svc.inject(koly); svc.injectSecondary(fr)
+    check(svc.disagreements("khmelnytskyi", group: "4.2", today: "2026-11-24").count == 1)
+}
+
+// MARK: - Address book
+
+test("address normalization and search") {
+    check(AddressBook.normalizeHouse(" 10-а") == "10А" && AddressBook.normalizeHouse("53\\1") == "53/1")
+    check(AddressBook.normalizeName("вул. Грушевського М.") == "грушевського")
+    check(AddressBook.normalizeName("пров. Кам’янецький") == AddressBook.normalizeName("Кам'янецький"))
+    let e = AddressBook.entry(from: ["Загінці", "вул. Берегова", " 1, 10, 12, 4/1, 10-а", "1.1. підчерга"])!
+    check(e.queue == "1.1" && e.houses.contains("10А") && e.houses.contains("4/1"))
+    check(AddressBook.entry(from: ["Населений пункт", "Вулиця", "Список будинків", "Черга/підчерга"]) == nil)
+    check(AddressBook.districtName("/Content/Uploads/GPV6/xls/Черги_на_відключення_Хмельницький_РЕМ_побут_09102026.xlsx") == "Хмельницький РЕМ побут")
+}
+
+test("newest district files are picked from the page") {
+    let html = #"""
+    <a href="/Content/Uploads/GPV6/xls/Черги_на_відключення_Летичівський_РЕМ_01092026.xlsx">a</a>
+    <a href="/Content/Uploads/GPV6/xls/Черги_на_відключення_Летичівський_РЕМ_09102026.xlsx">b</a>
+    <a href="/Content/Uploads/GPV6/xls/%D0%A7%D0%B5%D1%80%D0%B3%D0%B8_на_відключення_Городоцький_РЕМ_09102026.xlsx">c</a>
+    <a href="/Content/Uploads/GPV6/pdf/Черги_на_відключення_Городоцький_РЕМ_09102026.pdf">pdf</a>
+    """#
+    let f = AddressBook.newestFiles(in: html)
+    check(f.count == 2, "\(f)")
+    check(f.contains { $0.hasSuffix("Летичівський_РЕМ_09102026.xlsx") })
+}
+
+test("xlsx sheet parsing (shared strings + numbers)") {
+    let ss = Data(#"<sst><si><t>Загінці</t></si><si><t>вул. Берегова</t></si><si><r><t>1, </t></r><r><t>2</t></r></si><si><t>2.1. підчерга</t></si></sst>"#.utf8)
+    let strings = XLSX.parseSharedStrings(ss)
+    check(strings == ["Загінці", "вул. Берегова", "1, 2", "2.1. підчерга"])
+    let sheet = Data(#"<worksheet><sheetData><row r="4"><c r="A4" t="s"><v>0</v></c><c r="B4" t="s"><v>1</v></c><c r="C4"><v>7</v></c><c r="D4" t="s"><v>3</v></c></row></sheetData></worksheet>"#.utf8)
+    let rows = XLSX.parseSheet(sheet, strings: strings)
+    check(rows == [["Загінці", "вул. Берегова", "7", "2.1. підчерга"]], "\(rows)")
+}
+
 try? FileManager.default.removeItem(at: tmp)
 print("\n\(checks - failures)/\(checks) checks passed" + (failures == 0 ? "" : ", \(failures) FAILED"))
 exit(failures == 0 ? 0 : 1)

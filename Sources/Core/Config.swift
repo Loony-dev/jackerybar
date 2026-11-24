@@ -12,9 +12,23 @@ struct StationConfig: Codable, Equatable, Identifiable {
     var capacityWh: Double?
     /// Capacity of one battery module in Wh (SolarVault 3 Pro Max / Pro Max AC: 2520).
     var moduleWh: Double?
+    /// Planned-outage schedule: region id (Koly, e.g. "khmelnytskyi") and queue ("1.1").
+    var region: String?
+    var queue: String?
 
     var id: String { deviceSn }
+    var scheduleRegion: String? { queue == nil ? nil : (region ?? "khmelnytskyi") }
     var displayName: String { (name?.isEmpty == false ? name : nil) ?? "Jackery SolarVault 3" }
+}
+
+struct PlanAlertConfig: Codable, Equatable {
+    var enabled = true
+    /// Notify this many minutes before a planned outage starts.
+    var minutesBefore = 30
+    /// Notify when the schedule for the station's queue changes (nil = yes).
+    var changes: Bool?
+
+    var notifyChanges: Bool { changes ?? true }
 }
 
 struct LowBatteryConfig: Codable, Equatable {
@@ -39,23 +53,26 @@ struct Config: Codable, Equatable {
     /// Window of power smoothing for the runtime estimate, seconds.
     var smoothingSeconds: Double?
     var lowBattery: LowBatteryConfig?
+    var planAlerts: PlanAlertConfig?
 
     var prefix: String { (topicPrefix?.isEmpty == false ? topicPrefix : nil) ?? "hb" }
     var alerts: LowBatteryConfig { lowBattery ?? LowBatteryConfig() }
+    var plan: PlanAlertConfig { planAlerts ?? PlanAlertConfig() }
     var isUsable: Bool { !host.isEmpty && !stations.isEmpty }
 
     init(host: String, port: Int? = 1883, username: String? = nil, password: String? = nil, topicPrefix: String? = "hb",
          stations: [StationConfig] = [], selected: String? = nil, theme: String? = nil, language: String? = nil,
-         smoothingSeconds: Double? = nil, lowBattery: LowBatteryConfig? = nil) {
+         smoothingSeconds: Double? = nil, lowBattery: LowBatteryConfig? = nil, planAlerts: PlanAlertConfig? = nil) {
         self.host = host; self.port = port; self.username = username; self.password = password
         self.topicPrefix = topicPrefix; self.stations = stations; self.selected = selected
         self.theme = theme; self.language = language; self.smoothingSeconds = smoothingSeconds; self.lowBattery = lowBattery
+        self.planAlerts = planAlerts
     }
 
     // --- coding with migration from the single-station format
 
     private enum Keys: String, CodingKey {
-        case host, port, username, password, topicPrefix, stations, selected, theme, language, smoothingSeconds, lowBattery
+        case host, port, username, password, topicPrefix, stations, selected, theme, language, smoothingSeconds, lowBattery, planAlerts
         // legacy single-station keys
         case deviceSn, token, name, capacityWh, moduleWh
     }
@@ -72,6 +89,7 @@ struct Config: Codable, Equatable {
         language = try c.decodeIfPresent(String.self, forKey: .language)
         smoothingSeconds = try c.decodeIfPresent(Double.self, forKey: .smoothingSeconds)
         lowBattery = try c.decodeIfPresent(LowBatteryConfig.self, forKey: .lowBattery)
+        planAlerts = try c.decodeIfPresent(PlanAlertConfig.self, forKey: .planAlerts)
         if let list = try c.decodeIfPresent([StationConfig].self, forKey: .stations) {
             stations = list
         } else if let sn = try c.decodeIfPresent(String.self, forKey: .deviceSn),
@@ -100,6 +118,7 @@ struct Config: Codable, Equatable {
         try c.encodeIfPresent(language, forKey: .language)
         try c.encodeIfPresent(smoothingSeconds, forKey: .smoothingSeconds)
         try c.encodeIfPresent(lowBattery, forKey: .lowBattery)
+        try c.encodeIfPresent(planAlerts, forKey: .planAlerts)
     }
 
     // --- file
@@ -139,7 +158,7 @@ enum Paths {
     /// All data files (everything except config.json).
     static func dataFiles() -> [URL] {
         let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])) ?? []
-        let prefixes = Kind.allCases.map { $0.rawValue + "-" } + ["history-"]
+        let prefixes = Kind.allCases.map { $0.rawValue + "-" } + ["history-", "schedule-", "addresses-"]
         return items.filter { u in u.pathExtension == "json" && prefixes.contains { u.lastPathComponent.hasPrefix($0) } }
     }
 

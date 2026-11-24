@@ -6,9 +6,9 @@ enum PreviewData {
     /// "Дім" during an outage (30 days of history, a week of outages) and "Гараж" charging from the grid.
     static func stations() -> [Station] {
         let home = Station(config: StationConfig(deviceSn: "HS2C0DEMO000001", token: "00000000", name: L("Дім", "Home"),
-                                                 capacityWh: nil, moduleWh: 2520))
+                                                 capacityWh: nil, moduleWh: 2520, region: "khmelnytskyi", queue: "1.1"))
         let garage = Station(config: StationConfig(deviceSn: "HS2C0DEMO000002", token: "00000000", name: L("Гараж", "Garage"),
-                                                   capacityWh: nil, moduleWh: 2520))
+                                                   capacityWh: nil, moduleWh: 2520, region: "khmelnytskyi", queue: "3.2"))
         seedHome(home)
         seedGarage(garage)
         return [home, garage]
@@ -69,6 +69,38 @@ enum PreviewData {
                            "swEpsInPw": 0, "swEpsOutPw": l, "pvPw": 0, "swEps": 1, "maxOutPw": 800,
                            "cellTemp": 297, "minCellTemp": 284, "maxCellTemp": 301, "wsig": -41],
                   net: -(l * 1.08 + 22), load: l)
+    }
+
+    /// A plausible Khmelnytskyi schedule for today and tomorrow, aligned with the demo outage.
+    static func schedule() -> (RegionSchedule, [RegionInfo]) {
+        let cal = RegionSchedule.kyivCalendar
+        let now = Date()
+        let h = cal.component(.hour, from: now)
+        func day(_ offset: Int) -> String {
+            let d = cal.date(byAdding: .day, value: offset, to: now)!
+            let c = cal.dateComponents([.year, .month, .day], from: d)
+            return String(format: "%04d-%02d-%02d", c.year!, c.month!, c.day!)
+        }
+        func i(_ a: Int, _ b: Int, _ maybe: Bool = false) -> RegionSchedule.Interval {
+            .init(from: String(format: "%02d:00", max(0, min(23, a))), to: String(format: "%02d:00", max(1, min(24, b))), type: maybe ? "maybe" : "off")
+        }
+        // Queue 1.1: an early outage, one going on now (the demo station is on battery), one tonight.
+        var today11 = [i(4, 7)]
+        if h - 1 > 7 { today11.append(i(h - 1, min(24, h + 3))) }
+        if h + 5 < 24 { today11.append(i(h + 5, min(24, h + 7), true)) }
+        let today32 = h + 2 < 23 ? [i(1, 4), i(h + 2, min(24, h + 5))] : [i(1, 4)]
+        let days = [
+            RegionSchedule.Day(date: day(0), groups: ["1.1": today11, "3.2": today32]),
+            RegionSchedule.Day(date: day(1), groups: ["1.1": [i(6, 9), i(16, 20)], "3.2": [i(9, 13), i(20, 24)]]),
+        ]
+        let iso = ISO8601DateFormatter()
+        iso.timeZone = RegionSchedule.kyiv
+        let stamp = iso.string(from: now.addingTimeInterval(-1200))
+        let s = RegionSchedule(id: "khmelnytskyi", provider: "khmelnytskoblenergo", sourceUrl: "https://hoe.com.ua/page/pogodinni-vidkljuchennja",
+                               fetchedAt: stamp, updatedAt: stamp, status: "ok", emergency: .init(), days: days, feed: "koly")
+        let info = RegionInfo(id: "khmelnytskyi", name: .init(uk: "Хмельницька", en: "Khmelnytskyi", ru: nil), provider: "khmelnytskoblenergo",
+                              groups: ["1.1", "1.2", "2.1", "2.2", "3.1", "3.2", "4.1", "4.2", "5.1", "5.2", "6.1", "6.2"], updatedAt: stamp, status: "ok")
+        return (s, [info])
     }
 
     private static func seedGarage(_ st: Station) {

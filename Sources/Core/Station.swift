@@ -26,6 +26,10 @@ final class Station {
     /// Mains presence and the outage log.
     let grid = GridLog()
     var lowBattery = LowBatteryTracker()
+    /// Start times of planned outages already announced ("in 30 min…").
+    var announcedPlans: Set<Double> = []
+    /// The last change of this station's queue schedule and when it was noticed.
+    var lastScheduleChange: (at: Date, change: ScheduleChange)?
 
     /// Commands sent but not yet reflected by the station: key → (value, sent at).
     private(set) var pending: [String: (value: Int, sentAt: Date)] = [:]

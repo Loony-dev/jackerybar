@@ -26,6 +26,21 @@ if let i = args.firstIndex(of: "--render-panel"), i + 1 < args.count {
     let hub = Hub()
     let stations = PreviewData.stations()
     hub.showPreview(stations, selected: stations[0].sn)
+    let (sched, regions) = PreviewData.schedule()
+    hub.schedules.inject(sched, index: regions)
+    if args.contains("disagree"), sched.days.count > 1, var ints = sched.days[1].groups["1.1"], ints.count > 1 {
+        // Second source that read tomorrow's evening outage differently.
+        var other = sched
+        ints[1].to = "19:00"; other.days[1].groups["1.1"] = ints; other.feed = "frankov"
+        hub.schedules.injectSecondary(other)
+    }
+    // A recent change to show on the schedule page: tomorrow's evening outage moved by an hour.
+    var older = sched
+    if older.days.count > 1, var ints = older.days[1].groups["1.1"], ints.count > 1 {
+        ints[1].from = "17:00"; older.days[1].groups["1.1"] = ints
+        stations[0].lastScheduleChange = (Date().addingTimeInterval(-1500),
+                                          ScheduleChange.diff(old: older, new: sched, group: "1.1", today: RegionSchedule.dayString()))
+    }
     let m = PanelModel(hub: hub)
     if let k = args.firstIndex(of: "metric"), k + 1 < args.count, let metric = Metric(rawValue: args[k + 1]) {
         m.page = .metric(metric)
@@ -34,6 +49,13 @@ if let i = args.firstIndex(of: "--render-panel"), i + 1 < args.count {
         m.page = .outage(stations[0].grid.outages.last!.start)
     } else if args.contains("outages") {
         m.page = .outages
+    } else if args.contains("schedule") {
+        m.page = .schedule
+    } else if args.contains("queue") {
+        m.addressQuery = .init(settlement: "Хмельницький", street: "Проскурівська", house: "1")
+        m.addressResults = [AddressMatch(district: "Хмельницький РЕМ побут", settlement: "Хмельницький", street: "вул. Проскурівська", queue: "1.1", exactHouse: true)]
+        m.addressSearched = true
+        m.page = .queue
     } else if args.contains("stats") {
         m.statsDays = 30
         m.page = .stats

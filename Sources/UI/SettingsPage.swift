@@ -11,10 +11,15 @@ struct StationDraft: Identifiable, Equatable {
     var capacityAuto = true
     var capacityKWh = ""
     var moduleWh: Double?
+    // Outage queue is chosen on the schedule page; kept here so saving settings doesn't drop it.
+    var region: String?
+    var queue: String?
 
     init() {}
 
     init(_ c: StationConfig) {
+        region = c.region
+        queue = c.queue
         name = c.name ?? ""
         sn = c.deviceSn
         token = c.token
@@ -36,6 +41,9 @@ struct SettingsDraft {
     var language = "uk"
     var alertsOn = true
     var thresholds = "30, 15"
+    var planOn = true
+    var planMinutes = "30"
+    var planChanges = true
     // Not shown in the form, preserved on save.
     var selected: String?
     var smoothingSeconds: Double?
@@ -53,6 +61,9 @@ struct SettingsDraft {
         language = c.language ?? Lang.current.rawValue
         alertsOn = c.alerts.enabled
         thresholds = c.alerts.thresholds.map(String.init).joined(separator: ", ")
+        planOn = c.plan.enabled
+        planMinutes = String(c.plan.minutesBefore)
+        planChanges = c.plan.notifyChanges
         selected = c.selected
         smoothingSeconds = c.smoothingSeconds
     }
@@ -81,13 +92,17 @@ struct SettingsDraft {
             }
             let name = s.name.trimmingCharacters(in: .whitespaces)
             list.append(StationConfig(deviceSn: sn, token: token, name: name.isEmpty ? nil : name,
-                                      capacityWh: cap, moduleWh: s.moduleWh))
+                                      capacityWh: cap, moduleWh: s.moduleWh,
+                                      region: s.queue == nil ? nil : s.region, queue: s.queue))
         }
         guard !list.isEmpty else { return fail("Додай хоча б одну станцію", "Add at least one station") }
 
         let levels = thresholds.split(whereSeparator: { $0 == "," || $0 == " " || $0 == ";" }).compactMap { Int($0) }
         guard !alertsOn || (!levels.isEmpty && levels.allSatisfy { (1...99).contains($0) })
         else { return fail("Пороги заряду — числа від 1 до 99 через кому", "Charge levels must be numbers 1–99, comma-separated") }
+
+        guard let minutes = Int(planMinutes.trimmingCharacters(in: .whitespaces)), (1...240).contains(minutes) || !planOn
+        else { return fail("Попередження про графік — від 1 до 240 хв", "Schedule warning must be 1–240 min") }
 
         let pfx = prefix.trimmingCharacters(in: .whitespaces)
         return .success(Config(host: host, port: port,
@@ -99,7 +114,8 @@ struct SettingsDraft {
                                theme: theme == "dark" ? nil : theme,
                                language: language,
                                smoothingSeconds: smoothingSeconds,
-                               lowBattery: LowBatteryConfig(enabled: alertsOn, thresholds: Array(Set(levels)).sorted(by: >))))
+                               lowBattery: LowBatteryConfig(enabled: alertsOn, thresholds: Array(Set(levels)).sorted(by: >)),
+                               planAlerts: PlanAlertConfig(enabled: planOn, minutesBefore: minutes, changes: planChanges)))
     }
 }
 
@@ -143,6 +159,26 @@ struct SettingsView: View {
                 }
                 if model.draft.alertsOn {
                     Field(label: L("Пороги, %", "Levels, %"), text: $model.draft.thresholds, prompt: "30, 15")
+                }
+                Divider().opacity(0.5)
+                HStack {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(L("Перед відключенням за графіком", "Before a scheduled outage")).font(.system(size: 12))
+                        Text(L("і чи вистачить заряду", "and whether the charge will last")).font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    SwitchView(isOn: model.draft.planOn) { model.draft.planOn = $0 }
+                }
+                if model.draft.planOn {
+                    Field(label: L("За скільки хвилин", "Minutes before"), text: $model.draft.planMinutes, prompt: "30")
+                }
+                HStack {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(L("Коли графік змінюється", "When the schedule changes")).font(.system(size: 12))
+                        Text(L("що саме змінилося для твоєї черги", "what exactly changed for your queue")).font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    SwitchView(isOn: model.draft.planChanges) { model.draft.planChanges = $0 }
                 }
                 Text(L("Сповіщення про зникнення й появу світла працюють завжди.", "Power outage / power back notifications are always on."))
                     .font(.system(size: 10)).foregroundStyle(.tertiary)

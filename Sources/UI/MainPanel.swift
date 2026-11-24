@@ -41,6 +41,10 @@ struct PanelView: View {
             StatsPage(model: model, st: model.station!)
         case .control where model.station != nil:
             ControlPage(model: model, st: model.station!)
+        case .schedule where model.station != nil:
+            SchedulePage(model: model, st: model.station!)
+        case .queue where model.station != nil:
+            QueuePage(model: model, st: model.station!)
         default:
             mainPage
         }
@@ -58,6 +62,7 @@ struct PanelView: View {
                 Header(st: st, error: model.hub.connError, demo: model.hub.isDemo && !Snapshot.active)
                 Hero(st: st, open: { model.open(.metric($0)) })
                 GridCard(log: st.grid, open: { model.open(.outages) })
+                PlanCard(hub: model.hub, st: st, open: { st.config.queue == nil ? model.openQueuePicker() : model.open(.schedule) })
                 PowerChart(st: st, open: { model.open(.metric(.battery)) })
                 Tiles(st: st, open: { model.open(.metric($0)) })
             }

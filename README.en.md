@@ -6,7 +6,7 @@
 
 <p align="center">
   A macOS menu bar widget for <b>Jackery SolarVault 3</b> home batteries.<br>
-  State of charge, how long the battery will last, charts, statistics, a power-outage log and station control.<br>
+  State of charge, how long the battery will last, outage schedules with a charge forecast, statistics, an outage log and station control.<br>
   Fully local over MQTT, with no Jackery cloud involved.
 </p>
 
@@ -80,6 +80,17 @@ Click any tile to open a detailed chart:
   - for an ongoing outage: how much longer the battery will last;
   - three charts: load, charge, battery.
 
+### Outage schedule (Ukraine)
+- The hourly outage schedule **for your queue**, today and tomorrow. Data comes from [Koly Ye](https://github.com/vkardin/koly) (20 regions), with [khm_outage_parser](https://github.com/frankov-dev/khm_outage_parser) as a fallback for Khmelnytskyi. Both parse the utility sites.
+- **Schedule card** on the main page: the next outage ("16:00–20:00 · in 2h 10m") and right away **whether the charge will last**.
+- **Forecast across the whole schedule**: the station charges between outages and drains at the current load during them, so tomorrow's forecast accounts for today's outages.
+- **Schedule page**: a 24-hour bar per day, the plan (amber) over the actual outages seen by the station (red), and a list of intervals with forecasts.
+- **Heads-up notification** (30 min before by default): "Scheduled outage in 30 min, 16:00–20:00. Charge ~86% — lasts ~5h".
+- **Schedule-change notifications** saying exactly what changed: "Today: 19:00–22:00 → 18:00–22:00; added 23:00–24:00. Without power 6 → 8 h". A separate one when tomorrow's schedule is published. If the battery won't last under the new schedule, the notification warns about it. The last change also shows on the schedule page.
+- **Source cross-check** for Khmelnytskyi: the widget compares both sources and, if they disagree about your queue after intraday updates, shows both versions and a button to the utility's site.
+- **Queue by address** for Khmelnytskyi oblast: search over Khmelnytskoblenergo's official XLSX files (settlement / street / house). The files are downloaded once; your address is never sent anywhere.
+- The queue is picked right from the Schedule card: if none is set, the card opens the queue picker. Each station has its own queue.
+
 ### Low-battery alerts
 - When a discharging station reaches a level you set (**30% and 15%** by default), you get "Low battery: 15% — the battery lasts ~1h 10m more, until 21:40".
 - Each level fires once and re-arms after the station recharges above it.
@@ -107,9 +118,13 @@ After a command, the widget waits for the station to confirm the new value and w
 |:---:|:---:|:---:|
 | <img src="docs/screenshots/panel-light-en.png" width="260"> | <img src="docs/screenshots/chart30-en.png" width="260"> | <img src="docs/screenshots/stats-en.png" width="260"> |
 
-| Outages this week | Single outage | Control |
+| Outage schedule | Queue by address | Control |
 |:---:|:---:|:---:|
-| <img src="docs/screenshots/outages-en.png" width="260"> | <img src="docs/screenshots/outage-en.png" width="260"> | <img src="docs/screenshots/control-en.png" width="260"> |
+| <img src="docs/screenshots/schedule-en.png" width="260"> | <img src="docs/screenshots/queue-en.png" width="260"> | <img src="docs/screenshots/control-en.png" width="260"> |
+
+| Outages this week | Single outage |
+|:---:|:---:|
+| <img src="docs/screenshots/outages-en.png" width="260"> | <img src="docs/screenshots/outage-en.png" width="260"> |
 
 | Metric chart | Settings |
 |:---:|:---:|
@@ -206,13 +221,14 @@ Everything lives in `~/.config/jackery-bar/config.json`. You'll normally edit it
   "password": "…",
   "topicPrefix": "hb",
   "stations": [
-    { "deviceSn": "HS2C…", "token": "…", "name": "Home" },
+    { "deviceSn": "HS2C…", "token": "…", "name": "Home", "region": "khmelnytskyi", "queue": "1.1" },
     { "deviceSn": "HS2C…", "token": "…", "name": "Garage", "capacityWh": 5040 }
   ],
   "selected": "HS2C…",
   "language": "en",
   "theme": "dark",
-  "lowBattery": { "enabled": true, "thresholds": [30, 15] }
+  "lowBattery": { "enabled": true, "thresholds": [30, 15] },
+  "planAlerts": { "enabled": true, "minutesBefore": 30 }
 }
 ```
 
@@ -220,11 +236,12 @@ Everything lives in `~/.config/jackery-bar/config.json`. You'll normally edit it
 |---|---|
 | `host`, `port`, `username`, `password` | MQTT broker |
 | `topicPrefix` | topic prefix, default `hb` |
-| `stations[]` | `deviceSn` and `token` (required), `name`, `capacityWh` (manual capacity), `moduleWh` (module capacity, default 2520) |
+| `stations[]` | `deviceSn` and `token` (required), `name`, `capacityWh` (manual capacity), `moduleWh` (module capacity, default 2520), `region` and `queue` (outage queue, e.g. `khmelnytskyi` / `1.1`) |
 | `selected` | the station shown in the menu bar |
 | `language` | `uk` (default) or `en` |
 | `theme` | `dark` (default), `light`, `system` |
 | `lowBattery` | low-battery alerts: `enabled`, `thresholds` (in %) |
+| `planAlerts` | heads-up before a scheduled outage: `enabled`, `minutesBefore` |
 | `smoothingSeconds` | power smoothing for the runtime estimate, default 60 s |
 
 The old single-station format (`deviceSn`/`token` at the top level) is read automatically and rewritten in the new format on the first save.
@@ -240,6 +257,8 @@ Everything stays in `~/.config/jackery-bar/` and is never sent anywhere. Each st
 | `longterm-<SN>.json` | 5-minute averages for a year (≈5 MB per year) |
 | `outages-<SN>.json` | 90-day outage log; each outage keeps its own per-minute data |
 | `losses-<SN>.json` | samples for the inverter efficiency model |
+| `schedule-<region>.json` | last copy of the outage schedule (works offline) |
+| `addresses-khmelnytskyi.json` | parsed Khmelnytskoblenergo "address → queue" files (~3 MB, refreshed weekly) |
 
 The data size and a **Clear all data** button are in the settings, under Data. Settings are kept when clearing.
 
@@ -315,6 +334,8 @@ Sources/
     GridLog.swift        outage detection, outage log, per-outage stats
     LossModel.swift      inverter efficiency model
     Discovery.swift      finds stations in the Mosquitto log
+    Schedule*.swift      outage schedules (Koly / hoe.com.ua), charge forecast over the schedule
+    AddressBook.swift    queue by address from Khmelnytskoblenergo's XLSX files
     Format.swift, Lang.swift
   UI/                  SwiftUI/AppKit: menu bar item, window, pages
 Tests/main.swift       Core tests
@@ -334,6 +355,9 @@ scripts/
 
 - [Jackery-Official/jackery](https://github.com/Jackery-Official/jackery): the official Home Assistant integration and the source of the protocol (MIT).
 - [Bigdaddy1990/jackery_solarvault](https://github.com/Bigdaddy1990/jackery_solarvault) and [steinhuegel/ioBroker.jackery-solarvault](https://github.com/steinhuegel/ioBroker.jackery-solarvault): field and model references.
+- [Koly Ye](https://github.com/vkardin/koly) (MIT): normalized outage schedules by region.
+- [khm_outage_parser](https://github.com/frankov-dev/khm_outage_parser): Khmelnytskyi schedules (fallback source).
+- [fastiuk/ukraine-energy-monitor](https://github.com/fastiuk/ukraine-energy-monitor): an overview of schedule sources for every utility.
 - [Stats](https://github.com/exelban/stats): inspiration for the widget's look.
 
 ## License

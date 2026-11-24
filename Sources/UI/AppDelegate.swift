@@ -53,6 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         hub.onUpdate = { [weak self] in self?.redraw() }
         hub.onGrid = { [weak self] st, on, ended in self?.notifyGrid(st, on: on, ended: ended) }
         hub.onLowBattery = { [weak self] st, level in self?.notifyLowBattery(st, level: level) }
+        hub.onPlannedSoon = { [weak self] st, o, fc in self?.notifyPlanned(st, o, fc) }
+        hub.onScheduleChanged = { [weak self] st, ch in self?.notifyScheduleChanged(st, ch) }
 
         if CommandLine.arguments.contains("--demo") {
             hub.startDemo()
@@ -159,6 +161,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         post(c, station: st, page: "main")
     }
 
+    private func notifyPlanned(_ st: Station, _ o: PlannedOutage, _ fc: PlanForecast?) {
+        let c = UNMutableNotificationContent()
+        let mins = Int((o.start.timeIntervalSinceNow / 60).rounded())
+        let span = "\(Fmt.clock(o.start.timeIntervalSince1970))–\(Fmt.clock(o.end.timeIntervalSince1970))"
+        c.title = L("Через \(max(mins, 1)) хв відключення за графіком", "Scheduled outage in \(max(mins, 1)) min")
+        var body = prefix(st) + L("\(span), черга \(st.config.queue ?? "—").", "\(span), queue \(st.config.queue ?? "—").")
+        if let fc {
+            let soc = Int(fc.socAtStart.rounded())
+            body += fc.runtimeHours.isInfinite
+                ? L(" Заряд ~\(soc)%.", " Charge ~\(soc)%.")
+                : fc.enough
+                    ? L(" Заряд ~\(soc)% — вистачить на ~\(Fmt.duration(fc.runtimeHours)).", " Charge ~\(soc)% — lasts ~\(Fmt.duration(fc.runtimeHours)).")
+                    : L(" Заряд ~\(soc)% — НЕ вистачить: ~\(Fmt.duration(fc.runtimeHours)) з \(Fmt.duration(fc.outageHours)).",
+                        " Charge ~\(soc)% — NOT enough: ~\(Fmt.duration(fc.runtimeHours)) of \(Fmt.duration(fc.outageHours)).")
+        }
+        c.body = body
+        post(c, station: st, page: "schedule")
+    }
+
+    private func notifyScheduleChanged(_ st: Station, _ ch: ScheduleChange) {
+        let c = UNMutableNotificationContent()
+        let q = st.config.queue ?? "—"
+        c.title = ch.isOnlyPublication
+            ? L("Графік на завтра: черга \(q)", "Tomorrow’s schedule: queue \(q)")
+            : L("Графік змінився: черга \(q)", "Schedule changed: queue \(q)")
+        var lines = ch.lines(today: RegionSchedule.dayString(), tomorrow: RegionSchedule.dayString(offset: 1))
+        // Warn if, with the new schedule, the battery won't last through an upcoming outage.
+        let plan = hub.plan(for: st)
+        if let (o, fc) = zip(plan, st.forecasts(plan)).first(where: { $0.1.map { !$0.enough } ?? false }), let fc {
+            lines.append(L("⚠︎ На \(Fmt.clock(o.start.timeIntervalSince1970))–\(Fmt.clock(o.end.timeIntervalSince1970)) заряду не вистачить: ~\(Fmt.duration(fc.runtimeHours)) з \(Fmt.duration(fc.outageHours)).",
+                           "⚠︎ \(Fmt.clock(o.start.timeIntervalSince1970))–\(Fmt.clock(o.end.timeIntervalSince1970)): the battery won’t last, ~\(Fmt.duration(fc.runtimeHours)) of \(Fmt.duration(fc.outageHours))."))
+        }
+        c.body = prefix(st) + lines.joined(separator: "\n")
+        post(c, station: st, page: "schedule")
+    }
+
     private func post(_ c: UNMutableNotificationContent, station st: Station, page: String) {
         c.sound = .default
         c.userInfo = ["sn": st.sn, "page": page]
@@ -177,7 +215,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let info = response.notification.request.content.userInfo
         DispatchQueue.main.async {
             if let sn = info["sn"] as? String { self.hub.select(sn) }
-            self.panel.page = (info["page"] as? String) == "outages" ? .outages : .main
+            switch info["page"] as? String {
+            case "outages": self.panel.page = .outages
+            case "schedule": self.panel.page = .schedule
+            default: self.panel.page = .main
+            }
             if !self.popup.isVisible, let b = self.item.button { self.redraw(); self.popup.show(below: b) }
         }
         done()

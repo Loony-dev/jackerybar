@@ -10,6 +10,8 @@ enum Page: Equatable {
     case stats
     case control
     case settings
+    case schedule
+    case queue                // outage-queue picker for the selected station
 }
 
 enum StatsKind: String, CaseIterable {
@@ -51,6 +53,44 @@ final class PanelModel: ObservableObject {
 
     enum VerifyState: Equatable { case checking, done(Hub.VerifyResult) }
 
+    // Queue picker / address search
+    struct AddressQuery { var settlement = "Хмельницький"; var street = ""; var house = "" }
+    @Published var addressQuery = AddressQuery()
+    @Published var addressResults: [AddressMatch] = [] { didSet { layout() } }
+    @Published var addressLoading = false { didSet { layout() } }
+    @Published var addressError: String? { didSet { layout() } }
+    @Published var addressSearched = false
+
+    /// Region shown in the queue picker before a queue is chosen.
+    @Published var queueRegion = "khmelnytskyi"
+
+    func openQueuePicker() {
+        queueRegion = station?.config.region ?? "khmelnytskyi"
+        addressResults = []; addressSearched = false; addressError = nil
+        if hub.schedules.index.isEmpty { hub.schedules.fetchIndex() }
+        page = .queue
+    }
+
+    /// Saves the queue for the selected station and shows its schedule.
+    func pickQueue(_ q: String?, region: String) {
+        guard let st = station else { return }
+        hub.setQueue(st.sn, region: region, queue: q)
+        if q != nil { addressResults = []; addressSearched = false; page = .schedule }
+    }
+
+    func searchAddress() {
+        addressError = nil
+        addressLoading = true
+        hub.addresses.load { [weak self] err in
+            guard let self else { return }
+            self.addressLoading = false
+            self.addressError = err.map { L("Не вдалося завантажити файли черг: \($0)", "Couldn’t download the queue files: \($0)") }
+            let q = self.addressQuery
+            self.addressResults = self.hub.addresses.search(settlement: q.settlement, street: q.street, house: q.house)
+            self.addressSearched = true
+        }
+    }
+
     // Wired by AppDelegate
     var onOpenConfig: () -> Void = {}
     var onReload: () -> Void = {}
@@ -73,6 +113,9 @@ final class PanelModel: ObservableObject {
         confirming = nil
         switch page {
         case .outage: page = .outages
+        case .queue:
+            addressResults = []; addressSearched = false
+            page = station?.config.queue == nil ? .main : .schedule
         case .settings: settingsError = nil; confirmClear = false; page = .main
         default: page = .main
         }
@@ -119,6 +162,7 @@ final class PanelModel: ObservableObject {
 
     func clearData() {
         hub.clearAllData()
+        hub.addresses.removeCache()
         dataSize = Paths.dataSize()
         confirmClear = false
         cleared = true

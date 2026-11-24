@@ -17,6 +17,8 @@ for lang in uk en; do
   $B --render-panel $D/outage-$lang.png dark outage $E
   $B --render-panel $D/stats-$lang.png dark stats $E
   $B --render-panel $D/control-$lang.png dark control $E
+  $B --render-panel $D/schedule-$lang.png dark schedule $E
+  $B --render-panel $D/queue-$lang.png dark queue $E
   $B --render-panel $D/settings-$lang.png dark settings $E
 done
 echo "Screenshots written to $D"

@@ -15,6 +15,13 @@ final class Hub {
     var onUpdate: () -> Void = {}
     var onGrid: (Station, Bool, GridLog.Outage?) -> Void = { _, _, _ in }
     var onLowBattery: (Station, Int) -> Void = { _, _ in }
+    var onPlannedSoon: (Station, PlannedOutage, PlanForecast?) -> Void = { _, _, _ in }
+    var onScheduleChanged: (Station, ScheduleChange) -> Void = { _, _ in }
+
+    /// Planned-outage schedules (Koly / hoe.com.ua) and the address → queue book.
+    let schedules = ScheduleService()
+    let addresses = AddressBook()
+    private var planTimer: Timer?
 
     private var mqtt: MQTTClient?
     private var pollTimer: Timer?
@@ -39,6 +46,19 @@ final class Hub {
         c.selected = sn
         config = c
         if !isDemo { try? c.save() }
+        onUpdate()
+    }
+
+    /// Sets (or clears) a station's outage queue and saves config.json right away.
+    func setQueue(_ sn: String, region: String?, queue: String?) {
+        guard var c = config, let i = c.stations.firstIndex(where: { $0.deviceSn == sn }) else { return }
+        c.stations[i].queue = queue
+        c.stations[i].region = queue == nil ? nil : (region ?? "khmelnytskyi")
+        config = c
+        station(sn)?.update(config: c.stations[i])
+        station(sn)?.announcedPlans.removeAll()
+        if !isDemo { try? c.save() }
+        schedules.track(Set(stations.compactMap { $0.config.scheduleRegion }))
         onUpdate()
     }
 
@@ -89,7 +109,57 @@ final class Hub {
         client.start()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.poll() }
         saveTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.saveAll() }
+        startSchedules()
         onUpdate()
+    }
+
+    // MARK: planned outages
+
+    private func startSchedules() {
+        schedules.onUpdate = { [weak self] in self?.onUpdate() }
+        schedules.onChange = { [weak self] id, old, new in self?.scheduleChanged(id, old: old, new: new) }
+        schedules.track(Set(stations.compactMap { $0.config.scheduleRegion }))
+        planTimer?.invalidate()
+        planTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.checkPlans() }
+    }
+
+    /// Works out what changed for each station's queue and tells about it.
+    func scheduleChanged(_ region: String, old: RegionSchedule?, new: RegionSchedule, now: Date = Date()) {
+        guard old != nil else { return }                       // first copy ever: nothing to compare with
+        let today = RegionSchedule.dayString(now)
+        for st in stations where st.config.scheduleRegion == region {
+            guard let q = st.config.queue else { continue }
+            let ch = ScheduleChange.diff(old: old, new: new, group: q, today: today)
+            guard !ch.isEmpty else { continue }
+            st.lastScheduleChange = (now, ch)
+            // Changed starts should be announced again.
+            st.announcedPlans.removeAll()
+            if config?.plan.notifyChanges ?? true { onScheduleChanged(st, ch) }
+        }
+    }
+
+    /// Planned outages for a station's queue (empty if no queue is set or no schedule yet).
+    func plan(for st: Station) -> [PlannedOutage] {
+        guard let region = st.config.scheduleRegion, let q = st.config.queue, let s = schedules.schedule(region) else { return [] }
+        return s.outages(group: q)
+    }
+
+    /// The outage going on now, or the next one.
+    func currentOrNextPlan(for st: Station, now: Date = Date()) -> PlannedOutage? {
+        plan(for: st).first { $0.end > now }
+    }
+
+    private func checkPlans(now: Date = Date()) {
+        guard let cfg = config, cfg.plan.enabled else { return }
+        let lead = TimeInterval(cfg.plan.minutesBefore * 60)
+        for st in stations {
+            guard let next = plan(for: st).first(where: { $0.start > now && !$0.maybe }) else { continue }
+            let key = next.start.timeIntervalSince1970
+            if next.start.timeIntervalSince(now) <= lead, !st.announcedPlans.contains(key) {
+                st.announcedPlans.insert(key)
+                onPlannedSoon(st, next, st.forecast(next, plan: plan(for: st), now: now))
+            }
+        }
     }
 
     private func wireGrid(_ st: Station) {
@@ -104,6 +174,7 @@ final class Hub {
     }
 
     private func stopConnection() {
+        planTimer?.invalidate(); planTimer = nil
         mqtt?.stop()
         mqtt = nil
         pollTimer?.invalidate(); pollTimer = nil
