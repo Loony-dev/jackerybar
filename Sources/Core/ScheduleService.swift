@@ -61,12 +61,12 @@ final class ScheduleService {
         }
     }
 
-    /// Second opinion for regions that have one (only Khmelnytskyi), kept to cross-check the primary feed.
-    private(set) var secondary: [String: RegionSchedule] = [:]
+    /// Other sources for the same region (only Khmelnytskyi has them), kept to cross-check the primary one.
+    private(set) var secondaries: [String: [RegionSchedule]] = [:]
 
     private func fetchRegion(_ id: String) {
         lastAttempt[id] = Date()
-        var koly: RegionSchedule?, frankov: RegionSchedule?
+        var koly: RegionSchedule?, frankov: RegionSchedule?, hoe: RegionSchedule?
         let group = DispatchGroup()
         group.enter()
         get(Self.kolyBase.appendingPathComponent("regions/\(id).json")) { data in
@@ -79,19 +79,22 @@ final class ScheduleService {
         if id == "khmelnytskyi" {
             group.enter()
             fetchFrankov { frankov = $0; group.leave() }
+            group.enter()
+            HoeParser.fetch(session: session) { hoe = $0; group.leave() }
         }
         group.notify(queue: .main) { [weak self] in
             guard let self else { return }
-            if let koly {
-                self.secondary[id] = frankov
-                self.accept(koly, id: id)
-            } else if let frankov {
-                self.secondary[id] = nil
-                self.accept(frankov, id: id)
-            } else {
+            // The operator's own posts win when they parse completely for today; then Koly, then the other parser.
+            let today = RegionSchedule.dayString()
+            let hoeOK = hoe.map { h in h.days.contains { $0.date == today && $0.groups.count >= 12 } } ?? false
+            let ranked = ([hoeOK ? hoe : nil, koly, frankov] + [hoeOK ? nil : hoe]).compactMap { $0 }
+            guard let primary = ranked.first else {
                 self.lastError[id] = L("Графік зараз недоступний", "Schedule unavailable right now")
                 self.onUpdate()
+                return
             }
+            self.secondaries[id] = Array(ranked.dropFirst())
+            self.accept(primary, id: id)
         }
     }
 
@@ -107,10 +110,10 @@ final class ScheduleService {
         group.notify(queue: .main) { done(RegionSchedule.fromFrankov(files.compactMap { $0 })) }
     }
 
-    /// Days on which the two sources disagree about a queue (today and later, days both sources have).
+    /// Where other sources disagree with the primary one about a queue (today and later).
     func disagreements(_ region: String, group: String, today: String = RegionSchedule.dayString()) -> [SourceDisagreement] {
-        guard let a = schedules[region], let b = secondary[region] else { return [] }
-        return SourceDisagreement.compare(a, b, group: group, today: today)
+        guard let a = schedules[region] else { return [] }
+        return (secondaries[region] ?? []).flatMap { SourceDisagreement.compare(a, $0, group: group, today: today) }
     }
 
     /// Where a person can check the operator's own publication.
@@ -119,7 +122,7 @@ final class ScheduleService {
     }
 
     /// Screenshots / tests.
-    func injectSecondary(_ s: RegionSchedule) { secondary[s.id] = s }
+    func injectSecondary(_ s: RegionSchedule) { secondaries[s.id, default: []].append(s) }
 
     private func accept(_ s: RegionSchedule, id: String) {
         let old = schedules[id]

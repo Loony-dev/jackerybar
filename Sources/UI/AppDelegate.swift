@@ -55,6 +55,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         hub.onLowBattery = { [weak self] st, level in self?.notifyLowBattery(st, level: level) }
         hub.onPlannedSoon = { [weak self] st, o, fc in self?.notifyPlanned(st, o, fc) }
         hub.onScheduleChanged = { [weak self] st, ch in self?.notifyScheduleChanged(st, ch) }
+        hub.onEmergency = { [weak self] region, active, note in self?.notifyEmergency(region, active, note) }
+        hub.onSmartCharge = { [weak self] st, raised, why in self?.notifySmartCharge(st, raised, why) }
+        panel.onTestNotifications = { [weak self] in self?.sendTestNotifications() }
 
         if CommandLine.arguments.contains("--demo") {
             hub.startDemo()
@@ -197,10 +200,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         post(c, station: st, page: "schedule")
     }
 
-    private func post(_ c: UNMutableNotificationContent, station st: Station, page: String) {
+    private func notifyEmergency(_ region: String, _ active: Bool, _ note: String?) {
+        let c = UNMutableNotificationContent()
+        c.title = active ? L("Аварійні відключення: \(region)", "Emergency outages: \(region)")
+                         : L("Аварійні відключення скасовано: \(region)", "Emergency outages lifted: \(region)")
+        c.body = active ? (note ?? L("Графіки погодинних відключень можуть не діяти.", "Hourly schedules may not apply."))
+                        : L("Знову діє графік погодинних відключень.", "The hourly schedule applies again.")
+        if let st = hub.selected { post(c, station: st, page: "schedule") } else { post(c) }
+    }
+
+    private func notifySmartCharge(_ st: Station, _ raised: Bool, _ why: String) {
+        let c = UNMutableNotificationContent()
+        c.title = raised ? L("Розумна зарядка: до 100%", "Smart charging: to 100%") : L("Розумна зарядка завершена", "Smart charging done")
+        c.body = prefix(st) + why
+        post(c, station: st, page: "schedule")
+    }
+
+    /// One of each kind, so you can see (and check Telegram) what they look like.
+    private func sendTestNotifications() {
+        let st = hub.selected
+        let samples: [(String, String)] = [
+            (L("Зникло світло", "Power outage"), L("станція на батареї: заряд 77%, вистачить на ~5 год 10 хв.", "station on battery: 77%, lasts ~5h 10m.")),
+            (L("Світло з’явилося", "Power is back"), L("Світла не було 2 год 14 хв. Заряд 41%.", "Outage lasted 2h 14m. Charge 41%.")),
+            (L("Низький заряд: 15%", "Low battery: 15%"), L("батареї вистачить ще на ~1 год 10 хв, до 21:40.", "the battery lasts ~1h 10m more, until 21:40.")),
+            (L("Через 30 хв відключення за графіком", "Scheduled outage in 30 min"), L("16:00–20:00, черга 1.1. Заряд ~86% — вистачить на ~5 год.", "16:00–20:00, queue 1.1. Charge ~86% — lasts ~5h.")),
+            (L("Графік змінився: черга 1.1", "Schedule changed: queue 1.1"), L("Сьогодні: 19:00–22:00 → 18:00–22:00. Без світла 6 → 7 год.", "Today: 19:00–22:00 → 18:00–22:00. Without power 6 → 7 h.")),
+            (L("Аварійні відключення: Хмельницька", "Emergency outages: Khmelnytskyi"), L("Графіки погодинних відключень можуть не діяти.", "Hourly schedules may not apply.")),
+            (L("Розумна зарядка: до 100%", "Smart charging: to 100%"), L("Ліміт заряду піднято з 90% до 100% перед відключенням 16:00–20:00.", "Charge limit raised from 90% to 100% before the 16:00–20:00 outage.")),
+        ]
+        for (i, s) in samples.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.6) {
+                let c = UNMutableNotificationContent()
+                c.title = L("[Тест] ", "[Test] ") + s.0
+                c.body = s.1
+                if let st { self.post(c, station: st, page: "main") } else { self.post(c) }
+            }
+        }
+    }
+
+    private func post(_ c: UNMutableNotificationContent, station st: Station? = nil, page: String = "main") {
         c.sound = .default
-        c.userInfo = ["sn": st.sn, "page": page]
+        if let st { c.userInfo = ["sn": st.sn, "page": page] }
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+        // Same text to Telegram, if set up.
+        if let tg = hub.config?.telegram, tg.isUsable {
+            Telegram.send(tg, text: "\(c.title)\n\(c.body)")
+        }
     }
 
     // Show banners even if the app happens to be frontmost.

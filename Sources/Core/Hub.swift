@@ -17,6 +17,12 @@ final class Hub {
     var onLowBattery: (Station, Int) -> Void = { _, _ in }
     var onPlannedSoon: (Station, PlannedOutage, PlanForecast?) -> Void = { _, _, _ in }
     var onScheduleChanged: (Station, ScheduleChange) -> Void = { _, _ in }
+    /// Emergency outages announced / lifted for a region (region name, active, note).
+    var onEmergency: (String, Bool, String?) -> Void = { _, _, _ in }
+    /// Smart charging raised (true) or restored (false) a station's charge limit, with a human reason.
+    var onSmartCharge: (Station, Bool, String) -> Void = { _, _, _ in }
+    private var emergencyState: [String: Bool] = [:]
+    private var pollCount = 0
 
     /// Planned-outage schedules (Koly / hoe.com.ua) and the address → queue book.
     let schedules = ScheduleService()
@@ -116,11 +122,39 @@ final class Hub {
     // MARK: planned outages
 
     private func startSchedules() {
-        schedules.onUpdate = { [weak self] in self?.onUpdate() }
+        schedules.onUpdate = { [weak self] in
+            self?.recordPlans()
+            self?.checkEmergency()
+            self?.onUpdate()
+        }
         schedules.onChange = { [weak self] id, old, new in self?.scheduleChanged(id, old: old, new: new) }
         schedules.track(Set(stations.compactMap { $0.config.scheduleRegion }))
         planTimer?.invalidate()
         planTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.checkPlans() }
+    }
+
+    /// Keeps each station's planned outages per day, for plan-vs-fact (past days stay as last seen).
+    func recordPlans(now: Date = Date()) {
+        let today = RegionSchedule.dayString(now)
+        for st in stations {
+            guard let region = st.config.scheduleRegion, let q = st.config.queue, let s = schedules.schedule(region) else { continue }
+            for d in s.dates where d >= today {
+                if let spans = ScheduleChange.spans(s, date: d, group: q) { st.planLog[d] = spans }
+            }
+            let cutoff = RegionSchedule.dayString(now, offset: -90)
+            st.planLog = st.planLog.filter { $0.key >= cutoff }
+        }
+    }
+
+    private func checkEmergency() {
+        for region in Set(stations.compactMap { $0.config.scheduleRegion }) {
+            guard let s = schedules.schedule(region) else { continue }
+            let active = s.isEmergency
+            if let was = emergencyState[region], was != active {
+                onEmergency(schedules.region(region)?.localizedName ?? region, active, s.emergency?.note)
+            }
+            emergencyState[region] = active
+        }
     }
 
     /// Works out what changed for each station's queue and tells about it.
@@ -150,7 +184,9 @@ final class Hub {
     }
 
     private func checkPlans(now: Date = Date()) {
-        guard let cfg = config, cfg.plan.enabled else { return }
+        guard let cfg = config else { return }
+        smartCharge(now: now)
+        guard cfg.plan.enabled else { return }
         let lead = TimeInterval(cfg.plan.minutesBefore * 60)
         for st in stations {
             guard let next = plan(for: st).first(where: { $0.start > now && !$0.maybe }) else { continue }
@@ -170,6 +206,65 @@ final class Hub {
                 st.grid.save(to: Paths.file(.outages, st.sn))
             }
             self.onGrid(st, on, ended)
+        }
+    }
+
+    // MARK: smart charging
+
+    /// Raises the charge limit to 100 % before a scheduled outage the battery wouldn't last through,
+    /// and puts the old limit back once those outages are over. Opt-in (config.smartCharge).
+    func smartCharge(now: Date = Date()) {
+        guard let cfg = config, cfg.smart.enabled, isConnected || isDemo else { return }
+        for st in stations where !st.isStale && !st.tokenRejected {
+            let plan = plan(for: st)
+            let ahead = cfg.smart.lookaheadHours * 3600
+            let short = zip(plan, st.forecasts(plan, now: now)).filter { o, fc in
+                guard let fc, !o.maybe, o.end > now, o.start.timeIntervalSince(now) <= ahead else { return false }
+                return !fc.enough
+            }.map(\.0)
+            let limit = Int(st.maxSoc.rounded())
+
+            if var state = st.smartCharge {
+                // The user changed the limit themselves: step aside.
+                if limit != 100, !st.isPending("socChgLimit") { st.smartCharge = nil; continue }
+                if let last = short.last { state.until = max(state.until, last.end.timeIntervalSince1970); st.smartCharge = state }
+                if now.timeIntervalSince1970 > state.until, short.isEmpty {
+                    if send(.chargeLimit(state.originalLimit), to: st) {
+                        st.smartCharge = nil
+                        onSmartCharge(st, false, L("Ліміт заряду повернуто до \(state.originalLimit)%.", "Charge limit set back to \(state.originalLimit)%."))
+                    }
+                }
+            } else if let first = short.first, limit < 100 {
+                if send(.chargeLimit(100), to: st) {
+                    let span = "\(Fmt.clock(first.start.timeIntervalSince1970))–\(Fmt.clock(first.end.timeIntervalSince1970))"
+                    let reason = L("Ліміт заряду піднято з \(limit)% до 100% перед відключенням \(span): з поточним лімітом заряду не вистачало.",
+                                   "Charge limit raised from \(limit)% to 100% before the \(span) outage: the current limit wasn’t enough.")
+                    st.smartCharge = .init(originalLimit: limit, until: short.last!.end.timeIntervalSince1970, reason: reason)
+                    onSmartCharge(st, true, reason)
+                }
+            }
+        }
+    }
+
+    // MARK: sub-devices
+
+    /// Switches a smart plug (local mode only).
+    @discardableResult
+    func sendPlug(_ plug: SubDevice, on: Bool, of st: Station) -> Bool {
+        guard let cfg = config, let mqtt, connError == nil, plug.isLocal else { return false }
+        mqtt.publish(JackeryProtocol.topic(cfg.prefix, st.sn, "action"),
+                     JackeryProtocol.plugSwitch(sn: plug.sn, devType: plug.devType, on: on, token: st.config.token))
+        st.markPlugSent(plug.sn, on: on)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.pollSubDevices() }
+        onUpdate()
+        return true
+    }
+
+    private func pollSubDevices() {
+        guard let cfg = config, let mqtt, connError == nil else { return }
+        for st in stations {
+            let topic = JackeryProtocol.topic(cfg.prefix, st.sn, "action")
+            for dt in [2, 6] { mqtt.publish(topic, JackeryProtocol.subDevices(devType: dt, token: st.config.token)) }
         }
     }
 
@@ -198,6 +293,8 @@ final class Hub {
 
     private func poll() {
         guard let cfg = config, let mqtt, connError == nil else { return }
+        pollCount += 1
+        if pollCount % 12 == 1 { pollSubDevices() }        // plugs and CT meters about once a minute
         for st in stations {
             let topic = JackeryProtocol.topic(cfg.prefix, st.sn, "action")
             for type in JackeryProtocol.pollTypes {
@@ -241,6 +338,7 @@ final class Hub {
     /// Sends a settings change to a station. Returns false when not connected.
     @discardableResult
     func send(_ cmd: JackeryProtocol.Command, to st: Station) -> Bool {
+        if isDemo { st.markSent(cmd); onUpdate(); return true }          // demo / tests: nothing to send
         guard let cfg = config, let mqtt, connError == nil else { return false }
         mqtt.publish(JackeryProtocol.topic(cfg.prefix, st.sn, "action"), JackeryProtocol.command(cmd, token: st.config.token))
         st.markSent(cmd)
@@ -298,6 +396,9 @@ final class Hub {
         tick()
         demoTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in tick() }
     }
+
+    /// Tests: use a config without restarting anything.
+    func debugSetConfig(_ c: Config) { config = c }
 
     /// Stations prepared elsewhere (screenshots).
     func showPreview(_ list: [Station], selected: String?) {

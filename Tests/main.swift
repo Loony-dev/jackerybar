@@ -402,6 +402,156 @@ test("source cross-check finds disagreements per queue") {
     check(svc.disagreements("khmelnytskyi", group: "4.2", today: "2026-11-24").count == 1)
 }
 
+test("hoe.com.ua posts: base + additions + updates from a time") {
+    // The real 24.11 post (trimmed): base at the bottom, two "additional hours" updates above it.
+    let post = """
+    <div class="post"><p>…(оновлено з 20:00).</p><p>Додаткові години відсутності електроенергії:</p>
+    <p>Підчерга 2.1 - 20:00-22:00.</p><p>Підчерга 4.2 - 22:00-00:00.</p><hr />
+    <p>…(оновлено 23:20).</p><p>Додаткові години відсутності електроенергії:</p><p>Підчерга 5.2 &ndash; 01:00-04:00.</p><hr />
+    <p>За розпорядженням НЕК &laquo;Укренерго&raquo; 24.11.2026 р. … застосовані графіки (ГПВ).</p><p>Години відсутності електроенергії:</p>
+    <p>Підчерга 1.1 – 04:00-07:00; 12:00-16:00.<br /> Підчерга 1.2 – 01:00-04:00.</p><p>Підчерга 2.1 – 12:00-17:00.<br /> Підчерга 2.2 – 12:00-17:00.</p>
+    <p>Підчерга 3.1 – 06:00-10:00.<br /> Підчерга 3.2 – 06:00-10:00.</p><p>Підчерга 4.1 – 06:00-10:00.<br /> Підчерга 4.2 – 07:00-12:00; 16:00-20:00.</p>
+    <p>Підчерга 5.1 – 08:00-12:00.<br /> Підчерга 5.2 – 10:00-14:00.</p><p>Підчерга 6.1 – 10:00-14:00.<br /> Підчерга 6.2 – 10:00-14:00.</p></div><div>Наступна</div>
+    """
+    let g = HoeParser.parsePost(post)!
+    func t(_ k: String) -> String { (g[k] ?? []).map { "\($0.from)-\($0.to)" }.joined(separator: ",") }
+    check(g.count == 12)
+    check(t("4.2") == "07:00-12:00,16:00-20:00,22:00-24:00", t("4.2"))
+    check(t("2.1") == "12:00-17:00,20:00-22:00", t("2.1"))
+    check(t("5.2") == "01:00-04:00,10:00-14:00", t("5.2"))
+    check(t("1.1") == "04:00-07:00,12:00-16:00")
+
+    // A full schedule "з 20:00" replaces only what comes after 20:00; a short one only its groups.
+    let full = (1...6).flatMap { q in ["\(q).1", "\(q).2"] }
+    func list(_ f: (String) -> String) -> String { full.map { "<p>Підчерга \($0) – \(f($0)).</p>" }.joined() }
+    let update = """
+    <div class="post"><p>(оновлено з 21:30)</p><p>Підчерга 5.2 – 22:00-24:00.</p><hr />
+    <p>(оновлено з 20:00)</p><p>Години відсутності електроенергії:</p>\(list { _ in "18:00-22:00" })<hr />
+    <p>Години відсутності електроенергії:</p>\(list { _ in "10:00-15:00; 18:00-21:00" })</div>
+    """
+    let u = HoeParser.parsePost(update)!
+    func ut(_ k: String) -> String { (u[k] ?? []).map { "\($0.from)-\($0.to)" }.joined(separator: ",") }
+    check(ut("1.1") == "10:00-15:00,18:00-22:00", "before 20:00 from base, after from update: \(ut("1.1"))")
+    check(ut("5.2") == "10:00-15:00,18:00-21:30,22:00-24:00", ut("5.2"))
+
+    // Grouped lines, "з … до …", schedule cancelled from a time.
+    let misc = HoeParser.groupLines("Підчерги 3.1, 3.2 – з 10:00 до 15:00.\nПідчерга 6.2 – вимкнень не буде.")
+    check(misc["3.1"]?.first == 600..<900 && misc["3.2"]?.first == 600..<900 && misc["6.2"] == [])
+    let cancel = """
+    <div class="post"><p>(оновлено з 12:00) Графіки погодинних відключень не застосовуватимуться.</p><hr />
+    <p>Години відсутності електроенергії:</p>\(list { _ in "10:00-14:00; 18:00-20:00" })</div>
+    """
+    let c = HoeParser.parsePost(cancel)!
+    check(c["1.1"]?.map { "\($0.from)-\($0.to)" } == ["10:00-12:00"], "\(String(describing: c["1.1"]))")
+
+    // News list → target dates (December post about January = next year).
+    check(HoeParser.targetDate("Прогноз ГПВ на 24 листопада (ОНОВЛЕНО, 20:00)", pubYear: 2026, pubMonth: 11) == "2026-11-24")
+    check(HoeParser.targetDate("Погодинні відключення на 1 січня", pubYear: 2026, pubMonth: 12) == "2027-01-01")
+    check(!HoeParser.isSchedule("Графік обмеження потужності на 24 листопада"))
+    let news = """
+    <article class="item clearfix"><div class="heading"><a href="/post/prognoz-gpv-na-24-listopada-.html">Прогноз ГПВ на 24 листопада (ОНОВЛЕНО, 20:00)</a></div>
+    <div class="item-footer"><span>23 Лис 2026</span></div></article>
+    <article class="item clearfix"><div class="heading"><a href="/post/x.html">Чому графіки змінюються</a></div><div class="item-footer">20 Лис 2026</div></article>
+    """
+    let posts = HoeParser.posts(inNews: news)
+    check(posts.count == 1 && posts[0].date == "2026-11-24" && posts[0].url == "/post/prognoz-gpv-na-24-listopada-.html")
+}
+
+test("plan vs fact: hours, match, delays") {
+    let st = Station(config: StationConfig(deviceSn: "HS2C0TEST00001", token: "t"))
+    let now = Date()
+    let today = RegionSchedule.dayString(now, offset: -1)          // yesterday: a whole day
+    let d0 = RegionSchedule.date(today, "00:00")!.timeIntervalSince1970
+    // Plan: 10–14 and 18–20. Reality: 10:10–14:20 and 21–22 (unplanned); 18–20 the power stayed on.
+    st.planLog[today] = [.init(from: 600, to: 840, maybe: false), .init(from: 1080, to: 1200, maybe: false)]
+    st.grid.update(true, at: d0 - 3600); st.grid.update(true, at: d0 - 3595)
+    st.grid.update(false, at: d0 + 36600); st.grid.update(false, at: d0 + 36605)
+    st.grid.update(true, at: d0 + 51600); st.grid.update(true, at: d0 + 51605)
+    st.grid.update(false, at: d0 + 75600); st.grid.update(false, at: d0 + 75605)
+    st.grid.update(true, at: d0 + 79200); st.grid.update(true, at: d0 + 79205)
+    let a = st.planAccuracy(days: 2, now: now)!
+    check(near(a.plannedHours, 6) && near(a.actualHours, 5.167, 0.01) && near(a.matchedHours, 3.833, 0.01), "\(a)")
+    check(near(a.unplannedHours, 1.333, 0.01) && near(a.sparedHours, 2.167, 0.01))
+    check(near(a.startDelayMin, 10) && near(a.endDelayMin, 20), "delays \(String(describing: a.startDelayMin)) \(String(describing: a.endDelayMin))")
+    check(near(a.match, 3.833 / (6 + 5.167 - 3.833), 0.01))
+}
+
+test("smart charging raises the limit before a short outage and restores it") {
+    let hub = Hub()
+    let st = Station(config: StationConfig(deviceSn: "HS2C0TEST00001", token: "t", region: "khmelnytskyi", queue: "1.1"))
+    hub.showPreview([st], selected: st.sn)
+    var cfg = hub.config!; cfg.smartCharge = .init(enabled: true, lookaheadHours: 6)
+    var events: [(Bool, String)] = []
+    hub.onSmartCharge = { _, up, why in events.append((up, why)) }
+    let now = Date()
+    // Grid on, 40 %, limit 60 %, big load: a 5 h outage in 2 h won't be covered.
+    st.inject(values: ["soc": 40, "socDischgLimit": 10, "socChgLimit": 60, "swEpsOutPw": 600, "batInPw": 0, "batNum": 0, "ongridStat": 1],
+              net: 0, load: 600, at: now)
+    let day = RegionSchedule.dayString(now), tomorrow = RegionSchedule.dayString(now, offset: 1)
+    let start = now.addingTimeInterval(2 * 3600), end = start.addingTimeInterval(5 * 3600)
+    func hm(_ d: Date) -> String { let c = RegionSchedule.kyivCalendar.dateComponents([.hour, .minute], from: d); return String(format: "%02d:%02d", c.hour!, c.minute!) }
+    let sameDay = RegionSchedule.dayString(end) == day
+    let days: [RegionSchedule.Day] = sameDay
+        ? [.init(date: day, groups: ["1.1": [.init(from: hm(start), to: hm(end), type: "off")]])]
+        : [.init(date: day, groups: ["1.1": [.init(from: hm(start), to: "24:00", type: "off")]]),
+           .init(date: tomorrow, groups: ["1.1": [.init(from: "00:00", to: hm(end), type: "off")]])]
+    hub.schedules.inject(RegionSchedule(id: "khmelnytskyi", provider: "p", sourceUrl: "", fetchedAt: "", updatedAt: "", status: "ok",
+                                        emergency: nil, days: days, feed: nil))
+    hub.debugSetConfig(cfg)
+    hub.smartCharge(now: now)
+    check(events.count == 1 && events[0].0, "raised: \(events)")
+    check(st.smartCharge?.originalLimit == 60 && st.isPending("socChgLimit"))
+    // The station confirms 100 %, the outage passes → back to 60 %.
+    _ = st.ingest(["type": 2, "body": ["socChgLimit": 100, "soc": 90] as [String: Any]], at: now)
+    hub.smartCharge(now: end.addingTimeInterval(60))
+    check(events.count == 2 && !events[1].0 && st.smartCharge == nil, "restored: \(events)")
+}
+
+test("smart plugs and CT meters from type 101/102, plug switch payload") {
+    let st = Station(config: StationConfig(deviceSn: "HS2C0TEST00001", token: "t"))
+    let lists: [String: Any] = ["type": 101, "body": ["cmd": 110, "devType": 6, "plugs": [
+        ["deviceSn": "PLUG01", "name": "Холодильник", "outPw": 85, "switchSta": 1, "commMode": 1, "commState": 1, "totalEgy": 12.5],
+        ["deviceSn": "PLUG02", "scanName": "Бойлер", "outPw": 0, "switchSta": 0, "commMode": 2]]] as [String: Any]]
+    check(st.ingest(lists) == .data)
+    check(st.plugs.count == 2 && st.plugs["PLUG01"]?.displayName == "Холодильник" && st.plugs["PLUG01"]?.isLocal == true)
+    check(st.plugs["PLUG02"]?.isLocal == false && st.plugs["PLUG02"]?.isOn == false)
+    _ = st.ingest(["type": 101, "body": ["devType": 2, "cts": [["deviceSn": "CT01", "devType": 3, "aPhasePw": 300, "bPhasePw": 200, "anPhasePw": 50]]] as [String: Any]])
+    check(near(st.meters["CT01"]?.gridPower, 450))
+    _ = st.ingest(["type": 102, "body": ["deviceSn": "PLUG01", "outPw": 120] as [String: Any]])
+    check(st.plugs["PLUG01"]?.power == 120 && st.soc == nil, "point update goes to the plug, not the station")
+    st.markPlugSent("PLUG01", on: false)
+    check(st.plugs["PLUG01"]?.pendingOn == false)
+    _ = st.ingest(["type": 102, "body": ["deviceSn": "PLUG01", "switchSta": 0] as [String: Any]])
+    check(st.plugs["PLUG01"]?.pendingOn == nil && st.plugs["PLUG01"]?.isOn == false)
+    let p = try JSONSerialization.jsonObject(with: JackeryProtocol.plugSwitch(sn: "PLUG01", on: true, token: "t")) as! [String: Any]
+    let b = p["body"] as! [String: Any]
+    check(p["type"] as? Int == 103 && b["deviceSn"] as? String == "PLUG01" && b["sysSwitch"] as? Int == 1 && b["devType"] as? Int == 6)
+}
+
+test("tariff: night zone and daily cost") {
+    let t = TariffConfig(day: 4.32, night: 2.16, nightFrom: 23, nightTo: 7)
+    check(t.price(atHour: 23) == 2.16 && t.price(atHour: 3) == 2.16 && t.price(atHour: 7) == 4.32 && t.price(atHour: 12) == 4.32)
+    check(TariffConfig(day: 5).price(atHour: 2) == 5)
+    let ms = MetricStore()
+    let d0 = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 - 86400
+    // 1 kW from the grid 02:00–03:00 (night) and 12:00–13:00 (day).
+    for base in [7200.0, 43200.0] { for s in stride(from: 0.0, to: 3600, by: 300) { ms.record(at: Date(timeIntervalSince1970: d0 + base + s), values: ["grid": 1000]) } }
+    ms.record(at: Date(timeIntervalSince1970: d0 + 50000), values: ["grid": 0])
+    let day = ms.daily(days: 2, now: d0 + 86400 + 60, tariff: t)[0]
+    check(near(day.imported, 2, 0.01) && near(day.cost, 2.16 + 4.32, 0.02), "cost \(day.cost)")
+}
+
+test("csv export writes all files") {
+    let st = Station(config: StationConfig(deviceSn: "HS2C0TEST00001", token: "t", name: "Дім"))
+    let now = Date()
+    for i in 0..<50 { st.store.record(at: now.addingTimeInterval(Double(i - 50) * 10), values: ["ac": 100, "battery": -110, "soc": 50]) }
+    let dir = try Export.write(stations: [st], tariff: TariffConfig(), to: tmp, now: now)
+    let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
+    check(files.count == 4 && files.allSatisfy { $0.hasPrefix("Дім-") && $0.hasSuffix(".csv") }, "\(files)")
+    let raw = try String(contentsOf: dir.appendingPathComponent(files.first { $0.contains("24h") }!), encoding: .utf8)
+    check(raw.hasPrefix("time,battery,grid,ac,pv,soc,temp,wifi") && raw.split(separator: "\n").count == 51)
+}
+
 // MARK: - Address book
 
 test("address normalization and search") {

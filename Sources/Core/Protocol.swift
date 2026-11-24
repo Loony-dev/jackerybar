@@ -31,6 +31,19 @@ enum JackeryProtocol {
                 "ts": Int(Date().timeIntervalSince1970), "token": token, "body": NSNull()])
     }
 
+    /// Sub-device list request: devType 2 = CT meters, 6 = smart plugs. Answer: type 101 with "cts"/"plugs".
+    static func subDevices(devType: Int, token: String) -> Data {
+        encode(["type": 100, "eventId": 0, "messageId": Int.random(in: 1000...9999),
+                "ts": Int(Date().timeIntervalSince1970), "token": token, "body": ["devType": devType]])
+    }
+
+    /// Smart plug on/off: type 103 {deviceSn, devType, sysSwitch}. Works only for plugs in local mode (commMode 1).
+    static func plugSwitch(sn: String, devType: Int = 6, on: Bool, token: String) -> Data {
+        encode(["type": 103, "eventId": 0, "messageId": Int.random(in: 1000...9999),
+                "ts": Int(Date().timeIntervalSince1970), "token": token,
+                "body": ["deviceSn": sn, "devType": devType, "sysSwitch": on ? 1 : 0]])
+    }
+
     /// Settings change: type 1 / eventId 3 / body {cmd: 5, rc: 1, <key>: <value>}.
     static func command(_ cmd: Command, token: String, messageId: Int = Int.random(in: 1000...9999)) -> Data {
         var body: [String: Any] = ["cmd": 5, "rc": 1]

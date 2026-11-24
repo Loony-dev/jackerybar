@@ -44,6 +44,14 @@ struct SettingsDraft {
     var planOn = true
     var planMinutes = "30"
     var planChanges = true
+    var smartOn = false
+    var smartHours = "6"
+    var tgOn = false
+    var tgToken = ""
+    var tgChat = ""
+    var tariffDay = "4.32"
+    var tariffNightOn = false
+    var tariffNight = "2.16"
     // Not shown in the form, preserved on save.
     var selected: String?
     var smoothingSeconds: Double?
@@ -64,6 +72,14 @@ struct SettingsDraft {
         planOn = c.plan.enabled
         planMinutes = String(c.plan.minutesBefore)
         planChanges = c.plan.notifyChanges
+        smartOn = c.smart.enabled
+        smartHours = String(format: "%g", c.smart.lookaheadHours)
+        tgOn = c.telegram?.enabled ?? false
+        tgToken = c.telegram?.token ?? ""
+        tgChat = c.telegram?.chatId ?? ""
+        tariffDay = String(format: "%g", c.price.day)
+        tariffNightOn = c.price.night != nil
+        tariffNight = String(format: "%g", c.price.night ?? c.price.day / 2)
         selected = c.selected
         smoothingSeconds = c.smoothingSeconds
     }
@@ -104,6 +120,16 @@ struct SettingsDraft {
         guard let minutes = Int(planMinutes.trimmingCharacters(in: .whitespaces)), (1...240).contains(minutes) || !planOn
         else { return fail("Попередження про графік — від 1 до 240 хв", "Schedule warning must be 1–240 min") }
 
+        func number(_ s: String) -> Double? { Double(s.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")) }
+        guard let hours = number(smartHours), (1...24).contains(hours) || !smartOn
+        else { return fail("Розумна зарядка: дивитися вперед на 1–24 год", "Smart charging: look ahead 1–24 h") }
+        guard let day = number(tariffDay), day >= 0 else { return fail("Тариф — число, напр. 4.32", "Tariff must be a number, e.g. 4.32") }
+        let night = tariffNightOn ? number(tariffNight) : nil
+        if tariffNightOn && night == nil { return fail("Нічний тариф — число, напр. 2.16", "Night tariff must be a number, e.g. 2.16") }
+        if tgOn && (tgToken.trimmingCharacters(in: .whitespaces).isEmpty || tgChat.trimmingCharacters(in: .whitespaces).isEmpty) {
+            return fail("Telegram: вкажи токен бота і chat id", "Telegram: enter the bot token and chat id")
+        }
+
         let pfx = prefix.trimmingCharacters(in: .whitespaces)
         return .success(Config(host: host, port: port,
                                username: username.isEmpty ? nil : username,
@@ -115,7 +141,11 @@ struct SettingsDraft {
                                language: language,
                                smoothingSeconds: smoothingSeconds,
                                lowBattery: LowBatteryConfig(enabled: alertsOn, thresholds: Array(Set(levels)).sorted(by: >)),
-                               planAlerts: PlanAlertConfig(enabled: planOn, minutesBefore: minutes, changes: planChanges)))
+                               planAlerts: PlanAlertConfig(enabled: planOn, minutesBefore: minutes, changes: planChanges),
+                               smartCharge: SmartChargeConfig(enabled: smartOn, lookaheadHours: hours ?? 6),
+                               telegram: TelegramConfig(enabled: tgOn, token: tgToken.trimmingCharacters(in: .whitespaces),
+                                                        chatId: tgChat.trimmingCharacters(in: .whitespaces)),
+                               tariff: TariffConfig(day: day, night: night)))
     }
 }
 
@@ -180,9 +210,16 @@ struct SettingsView: View {
                     Spacer()
                     SwitchView(isOn: model.draft.planChanges) { model.draft.planChanges = $0 }
                 }
-                Text(L("Сповіщення про зникнення й появу світла працюють завжди.", "Power outage / power back notifications are always on."))
-                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                Text(L("Сповіщення про зникнення й появу світла та аварійні відключення працюють завжди.",
+                       "Power outage / power back and emergency-outage notifications are always on."))
+                    .font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                Button(L("Надіслати тестові сповіщення", "Send test notifications"), action: model.onTestNotifications)
+                    .controlSize(.small)
             }
+
+            telegramCard
+            smartChargeCard
+            tariffCard
 
             Card(title: L("Загальне", "General"), icon: "gearshape") {
                 Chips(items: [(L("Темна", "Dark"), "dark"), (L("Світла", "Light"), "light"), (L("Системна", "System"), "system")],
@@ -274,6 +311,73 @@ struct SettingsView: View {
 
     // MARK: data
 
+    private var telegramCard: some View {
+        Card(title: "Telegram", icon: "paperplane") {
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(L("Дублювати сповіщення в Telegram", "Also send notifications to Telegram")).font(.system(size: 12))
+                    Text(L("через твого власного бота (@BotFather → /newbot)", "through your own bot (@BotFather → /newbot)"))
+                        .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                SwitchView(isOn: model.draft.tgOn) { model.draft.tgOn = $0 }
+            }
+            if model.draft.tgOn {
+                Field(label: L("Токен бота", "Bot token"), text: $model.draft.tgToken, prompt: "123456:ABC…", secure: true)
+                HStack(alignment: .bottom, spacing: 8) {
+                    Field(label: "Chat id", text: $model.draft.tgChat, prompt: L("напиши боту й натисни «Знайти»", "message the bot, then Find"), mono: true)
+                    Button(L("Знайти", "Find"), action: model.findTelegramChat).controlSize(.small)
+                        .disabled(model.draft.tgToken.isEmpty).padding(.bottom, 3)
+                }
+                HStack {
+                    if let s = model.telegramStatus { Text(s).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2) }
+                    Spacer()
+                    Button(L("Тест", "Test"), action: model.testTelegram).controlSize(.small)
+                        .disabled(model.draft.tgToken.isEmpty || model.draft.tgChat.isEmpty)
+                }
+            }
+        }
+    }
+
+    private var smartChargeCard: some View {
+        Card(title: L("Розумна зарядка", "Smart charging"), icon: "bolt.badge.clock") {
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(L("Заряджати до 100% перед відключенням", "Charge to 100% before an outage")).font(.system(size: 12))
+                    Text(L("якщо з поточним лімітом заряду не вистачить; після — повертає ліміт",
+                           "if the current charge limit won’t be enough; sets it back afterwards"))
+                        .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                SwitchView(isOn: model.draft.smartOn) { model.draft.smartOn = $0 }
+            }
+            if model.draft.smartOn {
+                Field(label: L("Дивитися вперед, год", "Look ahead, h"), text: $model.draft.smartHours, prompt: "6")
+                Text(L("Змінює налаштування станції (ліміт заряду). Потрібна черга графіка; про кожну зміну прийде сповіщення.",
+                       "Changes a station setting (charge limit). Needs a schedule queue; you get a notification for every change."))
+                    .font(.system(size: 10)).foregroundStyle(Palette.amber).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var tariffCard: some View {
+        Card(title: L("Тариф", "Tariff"), icon: "hryvniasign.circle") {
+            HStack(spacing: 8) {
+                Field(label: L("Ціна, грн/кВт·год", "Price per kWh"), text: $model.draft.tariffDay, prompt: "4.32")
+                if model.draft.tariffNightOn {
+                    Field(label: L("Ніч 23–7", "Night 23–7"), text: $model.draft.tariffNight, prompt: "2.16")
+                }
+            }
+            HStack {
+                Text(L("Двозонний облік (ніч 23:00–7:00)", "Two-zone meter (night 23:00–7:00)")).font(.system(size: 12))
+                Spacer()
+                SwitchView(isOn: model.draft.tariffNightOn) { model.draft.tariffNightOn = $0 }
+            }
+            Text(L("Для статистики «Вартість»: скільки коштувала енергія з мережі.", "Used by the Cost statistics: what grid energy cost."))
+                .font(.system(size: 10)).foregroundStyle(.tertiary)
+        }
+    }
+
     private var dataCard: some View {
         Card(title: L("Дані", "Data"), icon: "internaldrive") {
             HStack {
@@ -294,12 +398,19 @@ struct SettingsView: View {
                 Label(L("Дані очищено", "Data cleared"), systemImage: "checkmark.circle.fill")
                     .font(.system(size: 11)).foregroundStyle(Palette.green)
             } else {
-                Button {
-                    model.confirmClear = true
-                } label: {
-                    Text(L("Очистити всі дані…", "Clear all data…")).foregroundStyle(Palette.red)
+                HStack {
+                    Button(L("Експорт у CSV", "Export to CSV"), action: model.exportCSV).controlSize(.small)
+                    Spacer()
+                    Button {
+                        model.confirmClear = true
+                    } label: {
+                        Text(L("Очистити всі дані…", "Clear all data…")).foregroundStyle(Palette.red)
+                    }
+                    .controlSize(.small)
                 }
-                .controlSize(.small)
+                if let s = model.exportStatus {
+                    Text(s).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
+                }
             }
         }
     }

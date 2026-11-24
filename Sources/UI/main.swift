@@ -58,6 +58,7 @@ if let i = args.firstIndex(of: "--render-panel"), i + 1 < args.count {
         m.page = .queue
     } else if args.contains("stats") {
         m.statsDays = 30
+        if args.contains("cost") { m.statsKind = .cost }
         m.page = .stats
     } else if args.contains("control") {
         m.controlDraft = ["socChgLimit": 90]
@@ -69,6 +70,8 @@ if let i = args.firstIndex(of: "--render-panel"), i + 1 < args.count {
         m.verify = [d.stations[0].id: .done(.ok)]
         m.found = [FoundStation(sn: "HS2C0DEMO000003", ip: "192.168.1.77", seen: Date().timeIntervalSince1970 - 120)]
         m.dataSize = 3_400_000
+        m.draft.tgOn = true; m.draft.tgToken = "000000:demo"; m.draft.tgChat = "123456789"
+        m.draft.smartOn = true; m.draft.tariffNightOn = true
         m.page = .settings
     }
     let view = PanelView(model: m, measuring: true)

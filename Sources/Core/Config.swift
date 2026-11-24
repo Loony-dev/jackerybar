@@ -31,6 +31,35 @@ struct PlanAlertConfig: Codable, Equatable {
     var notifyChanges: Bool { changes ?? true }
 }
 
+/// Raise the charge limit to 100 % before a scheduled outage the battery wouldn't last through.
+struct SmartChargeConfig: Codable, Equatable {
+    var enabled = false
+    /// How far ahead to look, hours.
+    var lookaheadHours = 6.0
+}
+
+struct TelegramConfig: Codable, Equatable {
+    var enabled = false
+    var token = ""
+    var chatId = ""
+    var isUsable: Bool { enabled && !token.isEmpty && !chatId.isEmpty }
+}
+
+/// Electricity price per kWh; optional night zone.
+struct TariffConfig: Codable, Equatable {
+    var day = 4.32
+    var night: Double?
+    var nightFrom = 23
+    var nightTo = 7
+    var currency = "грн"
+
+    func price(atHour h: Int) -> Double {
+        guard let night else { return day }
+        let inNight = nightFrom > nightTo ? (h >= nightFrom || h < nightTo) : (h >= nightFrom && h < nightTo)
+        return inNight ? night : day
+    }
+}
+
 struct LowBatteryConfig: Codable, Equatable {
     var enabled = true
     /// Notify once when the charge drops to each of these levels while discharging.
@@ -54,25 +83,32 @@ struct Config: Codable, Equatable {
     var smoothingSeconds: Double?
     var lowBattery: LowBatteryConfig?
     var planAlerts: PlanAlertConfig?
+    var smartCharge: SmartChargeConfig?
+    var telegram: TelegramConfig?
+    var tariff: TariffConfig?
 
     var prefix: String { (topicPrefix?.isEmpty == false ? topicPrefix : nil) ?? "hb" }
     var alerts: LowBatteryConfig { lowBattery ?? LowBatteryConfig() }
     var plan: PlanAlertConfig { planAlerts ?? PlanAlertConfig() }
+    var smart: SmartChargeConfig { smartCharge ?? SmartChargeConfig() }
+    var price: TariffConfig { tariff ?? TariffConfig() }
     var isUsable: Bool { !host.isEmpty && !stations.isEmpty }
 
     init(host: String, port: Int? = 1883, username: String? = nil, password: String? = nil, topicPrefix: String? = "hb",
          stations: [StationConfig] = [], selected: String? = nil, theme: String? = nil, language: String? = nil,
-         smoothingSeconds: Double? = nil, lowBattery: LowBatteryConfig? = nil, planAlerts: PlanAlertConfig? = nil) {
+         smoothingSeconds: Double? = nil, lowBattery: LowBatteryConfig? = nil, planAlerts: PlanAlertConfig? = nil,
+         smartCharge: SmartChargeConfig? = nil, telegram: TelegramConfig? = nil, tariff: TariffConfig? = nil) {
         self.host = host; self.port = port; self.username = username; self.password = password
         self.topicPrefix = topicPrefix; self.stations = stations; self.selected = selected
         self.theme = theme; self.language = language; self.smoothingSeconds = smoothingSeconds; self.lowBattery = lowBattery
         self.planAlerts = planAlerts
+        self.smartCharge = smartCharge; self.telegram = telegram; self.tariff = tariff
     }
 
     // --- coding with migration from the single-station format
 
     private enum Keys: String, CodingKey {
-        case host, port, username, password, topicPrefix, stations, selected, theme, language, smoothingSeconds, lowBattery, planAlerts
+        case host, port, username, password, topicPrefix, stations, selected, theme, language, smoothingSeconds, lowBattery, planAlerts, smartCharge, telegram, tariff
         // legacy single-station keys
         case deviceSn, token, name, capacityWh, moduleWh
     }
@@ -90,6 +126,9 @@ struct Config: Codable, Equatable {
         smoothingSeconds = try c.decodeIfPresent(Double.self, forKey: .smoothingSeconds)
         lowBattery = try c.decodeIfPresent(LowBatteryConfig.self, forKey: .lowBattery)
         planAlerts = try c.decodeIfPresent(PlanAlertConfig.self, forKey: .planAlerts)
+        smartCharge = try c.decodeIfPresent(SmartChargeConfig.self, forKey: .smartCharge)
+        telegram = try c.decodeIfPresent(TelegramConfig.self, forKey: .telegram)
+        tariff = try c.decodeIfPresent(TariffConfig.self, forKey: .tariff)
         if let list = try c.decodeIfPresent([StationConfig].self, forKey: .stations) {
             stations = list
         } else if let sn = try c.decodeIfPresent(String.self, forKey: .deviceSn),
@@ -119,6 +158,9 @@ struct Config: Codable, Equatable {
         try c.encodeIfPresent(smoothingSeconds, forKey: .smoothingSeconds)
         try c.encodeIfPresent(lowBattery, forKey: .lowBattery)
         try c.encodeIfPresent(planAlerts, forKey: .planAlerts)
+        try c.encodeIfPresent(smartCharge, forKey: .smartCharge)
+        try c.encodeIfPresent(telegram, forKey: .telegram)
+        try c.encodeIfPresent(tariff, forKey: .tariff)
     }
 
     // --- file
@@ -148,7 +190,7 @@ enum Paths {
     static var dir: URL { config.deletingLastPathComponent() }
 
     enum Kind: String, CaseIterable {
-        case metrics, longterm, outages, losses
+        case metrics, longterm, outages, losses, plans, smartcharge
     }
 
     static func file(_ kind: Kind, _ sn: String) -> URL {

@@ -63,6 +63,7 @@ struct PanelView: View {
                 Hero(st: st, open: { model.open(.metric($0)) })
                 GridCard(log: st.grid, open: { model.open(.outages) })
                 PlanCard(hub: model.hub, st: st, open: { st.config.queue == nil ? model.openQueuePicker() : model.open(.schedule) })
+                if !st.plugs.isEmpty || !st.meters.isEmpty { DevicesCard(hub: model.hub, st: st) }
                 PowerChart(st: st, open: { model.open(.metric(.battery)) })
                 Tiles(st: st, open: { model.open(.metric($0)) })
             }

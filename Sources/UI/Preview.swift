@@ -63,6 +63,18 @@ enum PreviewData {
             t += step
         }
         st.grid.update(false, at: ongoingStart); st.grid.update(false, at: ongoingStart + 5)
+        // Plan log for plan-vs-fact: the schedule said a bit earlier/longer than what really happened.
+        for (d, h, len) in past where d <= 6 {
+            let date = RegionSchedule.dayString(Date(), offset: -d)
+            let from = Int(h * 60) - 10, to = Int((h + len) * 60) - 15
+            let evening = to < 1200 ? [ScheduleChange.Span(from: 1260, to: 1380, maybe: false)] : []   // a planned outage that didn't happen
+            st.planLog[date] = [.init(from: max(0, from), to: min(1440, to), maybe: false)] + evening
+        }
+        // Two smart plugs and a CT meter.
+        _ = st.ingest(["type": 101, "body": ["devType": 6, "plugs": [
+            ["deviceSn": "PLUGDEMO01", "name": L("Холодильник", "Fridge"), "outPw": 84, "switchSta": 1, "commMode": 1, "commState": 1, "totalEgy": 18.4],
+            ["deviceSn": "PLUGDEMO02", "name": L("Бойлер", "Water heater"), "outPw": 0, "switchSta": 0, "commMode": 1, "commState": 1, "totalEgy": 42.1]]] as [String: Any]])
+        _ = st.ingest(["type": 101, "body": ["devType": 2, "cts": [["deviceSn": "CTDEMO01", "devType": 3, "tPhasePw": 0, "tnPhasePw": 0, "commState": 1]]] as [String: Any]])
         let l = 440.0
         st.inject(values: ["soc": soc, "batNum": 0, "socDischgLimit": 10, "socChgLimit": 100, "batInPw": 0,
                            "batOutPw": l * 1.08 + 22, "gridInPw": 0, "gridOutPw": 0, "ongridStat": 0,

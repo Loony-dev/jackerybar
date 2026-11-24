@@ -66,7 +66,8 @@ Click any tile to open a detailed chart:
 - min, average, max, plus energy over the range for power metrics.
 
 ### Daily statistics
-- Bars for **7 or 30 days**: consumed, discharged by the battery, imported from the grid, hours without power (and solar, if present).
+- Bars for **7 or 30 days**: consumed, discharged by the battery, imported from the grid, **cost**, hours without power (and solar, if present).
+- The **tariff** is set in Settings: price per kWh, optionally a two-zone meter (night 23:00–7:00).
 - Total, daily average and the highest day, with a dashed average line.
 
 ### Power and outages
@@ -81,15 +82,26 @@ Click any tile to open a detailed chart:
   - three charts: load, charge, battery.
 
 ### Outage schedule (Ukraine)
-- The hourly outage schedule **for your queue**, today and tomorrow. Data comes from [Koly Ye](https://github.com/vkardin/koly) (20 regions), with [khm_outage_parser](https://github.com/frankov-dev/khm_outage_parser) as a fallback for Khmelnytskyi. Both parse the utility sites.
+- The hourly outage schedule **for your queue**, today and tomorrow. Data comes from [Koly Ye](https://github.com/vkardin/koly) (20 regions).
+- **For Khmelnytskyi the widget reads hoe.com.ua posts directly** and applies intraday updates itself ("Додаткові години…", "оновлено з 20:00") — exactly where third-party services go wrong. Koly and [khm_outage_parser](https://github.com/frankov-dev/khm_outage_parser) stay as fallbacks and for cross-checking.
 - **Schedule card** on the main page: the next outage ("16:00–20:00 · in 2h 10m") and right away **whether the charge will last**.
 - **Forecast across the whole schedule**: the station charges between outages and drains at the current load during them, so tomorrow's forecast accounts for today's outages.
 - **Schedule page**: a 24-hour bar per day, the plan (amber) over the actual outages seen by the station (red), and a list of intervals with forecasts.
 - **Heads-up notification** (30 min before by default): "Scheduled outage in 30 min, 16:00–20:00. Charge ~86% — lasts ~5h".
 - **Schedule-change notifications** saying exactly what changed: "Today: 19:00–22:00 → 18:00–22:00; added 23:00–24:00. Without power 6 → 8 h". A separate one when tomorrow's schedule is published. If the battery won't last under the new schedule, the notification warns about it. The last change also shows on the schedule page.
-- **Source cross-check** for Khmelnytskyi: the widget compares both sources and, if they disagree about your queue after intraday updates, shows both versions and a button to the utility's site.
+- **Source cross-check** for Khmelnytskyi: if sources disagree about your queue, the widget shows every version and a button to the utility's site.
+- **Emergency outages:** a notification when the operator announces emergency mode (schedules may not apply) and when it's lifted.
+- **Plan vs reality** for the week: hours scheduled vs. actual, match percentage, how many minutes earlier/later the power actually went off and came back, and unscheduled outages.
 - **Queue by address** for Khmelnytskyi oblast: search over Khmelnytskoblenergo's official XLSX files (settlement / street / house). The files are downloaded once; your address is never sent anywhere.
 - The queue is picked right from the Schedule card: if none is set, the card opens the queue picker. Each station has its own queue.
+
+### Smart charging
+- If the forecast says the current charge limit won't carry you through the next outage, the widget raises the limit to 100% in advance and sets it back afterwards.
+- Opt-in in Settings (off by default) because it changes a station setting. Every change sends a notification; if you change the limit yourself, the widget steps aside.
+
+### Notifications
+- Every notification can be **mirrored to Telegram** through your own bot: a token from @BotFather, "Find" detects the chat id, "Test" checks it.
+- **Send test notifications** shows one notification of each kind.
 
 ### Low-battery alerts
 - When a discharging station reaches a level you set (**30% and 15%** by default), you get "Low battery: 15% — the battery lasts ~1h 10m more, until 21:40".
@@ -104,11 +116,14 @@ The same local MQTT commands as Jackery's official integration:
 
 After a command, the widget waits for the station to confirm the new value and warns you if it doesn't.
 
+### Smart plugs and meter
+- If Jackery smart plugs or a CT meter are attached to the station, a Devices block appears on the main page: each plug's power, a switch (for plugs in local mode) and the meter's grid import/export.
+
 ### Also
 - **Station discovery**: a station connects to the broker with its serial number as the client id, and the widget finds it in the Mosquitto log. No need to copy the serial by hand.
 - **Token check** right in the settings: "token is correct", "wrong token" or "no answer".
 - **Self-learning inverter efficiency**: inverter losses are accounted for in the runtime estimate.
-- **History**: detailed points for 24 h and 5-minute averages for a year. The settings show how much disk space the data takes and offer **Clear all data**, with confirmation.
+- **History**: detailed points for 24 h and 5-minute averages for a year. The settings show how much disk space the data takes, offer **Export to CSV** (history, daily totals and outages into Downloads) and **Clear all data**, with confirmation.
 - **Localization**: Ukrainian (default) and English.
 - **Everything stays local**: plain JSON files in `~/.config/jackery-bar/`.
 
@@ -228,7 +243,10 @@ Everything lives in `~/.config/jackery-bar/config.json`. You'll normally edit it
   "language": "en",
   "theme": "dark",
   "lowBattery": { "enabled": true, "thresholds": [30, 15] },
-  "planAlerts": { "enabled": true, "minutesBefore": 30 }
+  "planAlerts": { "enabled": true, "minutesBefore": 30 },
+  "smartCharge": { "enabled": false, "lookaheadHours": 6 },
+  "telegram": { "enabled": true, "token": "…", "chatId": "…" },
+  "tariff": { "day": 4.32, "night": 2.16 }
 }
 ```
 
@@ -241,7 +259,10 @@ Everything lives in `~/.config/jackery-bar/config.json`. You'll normally edit it
 | `language` | `uk` (default) or `en` |
 | `theme` | `dark` (default), `light`, `system` |
 | `lowBattery` | low-battery alerts: `enabled`, `thresholds` (in %) |
-| `planAlerts` | heads-up before a scheduled outage: `enabled`, `minutesBefore` |
+| `planAlerts` | heads-up before a scheduled outage: `enabled`, `minutesBefore`, `changes` (schedule changes) |
+| `smartCharge` | smart charging: `enabled`, `lookaheadHours` |
+| `telegram` | `enabled`, bot `token`, `chatId` |
+| `tariff` | `day` (price per kWh), `night` (night price for a two-zone meter), `nightFrom`/`nightTo`, `currency` |
 | `smoothingSeconds` | power smoothing for the runtime estimate, default 60 s |
 
 The old single-station format (`deviceSn`/`token` at the top level) is read automatically and rewritten in the new format on the first save.
@@ -258,6 +279,8 @@ Everything stays in `~/.config/jackery-bar/` and is never sent anywhere. Each st
 | `outages-<SN>.json` | 90-day outage log; each outage keeps its own per-minute data |
 | `losses-<SN>.json` | samples for the inverter efficiency model |
 | `schedule-<region>.json` | last copy of the outage schedule (works offline) |
+| `plans-<SN>.json` | your queue's schedule per day for 90 days (for plan vs reality) |
+| `smartcharge-<SN>.json` | while smart charging has raised the limit: what it was before |
 | `addresses-khmelnytskyi.json` | parsed Khmelnytskoblenergo "address → queue" files (~3 MB, refreshed weekly) |
 
 The data size and a **Clear all data** button are in the settings, under Data. Settings are kept when clearing.
@@ -334,7 +357,11 @@ Sources/
     GridLog.swift        outage detection, outage log, per-outage stats
     LossModel.swift      inverter efficiency model
     Discovery.swift      finds stations in the Mosquitto log
-    Schedule*.swift      outage schedules (Koly / hoe.com.ua), charge forecast over the schedule
+    Schedule*.swift      outage schedules (Koly / hoe.com.ua), charge forecast, schedule changes, source cross-check
+    HoeParser.swift      reads hoe.com.ua posts, including intraday updates
+    PlanAccuracy.swift   plan vs reality
+    Telegram.swift       Telegram notifications
+    Export.swift         CSV export
     AddressBook.swift    queue by address from Khmelnytskoblenergo's XLSX files
     Format.swift, Lang.swift
   UI/                  SwiftUI/AppKit: menu bar item, window, pages

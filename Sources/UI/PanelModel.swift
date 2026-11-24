@@ -15,7 +15,7 @@ enum Page: Equatable {
 }
 
 enum StatsKind: String, CaseIterable {
-    case consumed, discharged, imported, outage, solar
+    case consumed, discharged, imported, cost, outage, solar
 
     var title: String {
         switch self {
@@ -24,6 +24,7 @@ enum StatsKind: String, CaseIterable {
         case .imported: L("З мережі", "From grid")
         case .outage: L("Без світла", "Outages")
         case .solar: L("Сонце", "Solar")
+        case .cost: L("Вартість", "Cost")
         }
     }
 }
@@ -91,6 +92,39 @@ final class PanelModel: ObservableObject {
         }
     }
 
+    // Telegram / export / test notifications
+    @Published var telegramStatus: String?
+    @Published var exportStatus: String?
+    var onTestNotifications: () -> Void = {}
+
+    func findTelegramChat() {
+        telegramStatus = L("Шукаю…", "Looking…")
+        Telegram.findChat(token: draft.tgToken.trimmingCharacters(in: .whitespaces)) { [weak self] r in
+            switch r {
+            case .success(let c): self?.draft.tgChat = c.id; self?.telegramStatus = L("Знайдено чат «\(c.name)»", "Found chat “\(c.name)”")
+            case .failure(let e): self?.telegramStatus = e.localizedDescription
+            }
+        }
+    }
+
+    func testTelegram() {
+        telegramStatus = L("Надсилаю…", "Sending…")
+        let cfg = TelegramConfig(enabled: true, token: draft.tgToken.trimmingCharacters(in: .whitespaces), chatId: draft.tgChat.trimmingCharacters(in: .whitespaces))
+        Telegram.send(cfg, text: L("JackeryBar: тестове повідомлення ✅", "JackeryBar: test message ✅")) { [weak self] err in
+            self?.telegramStatus = err ?? L("Надіслано — перевір Telegram", "Sent — check Telegram")
+        }
+    }
+
+    func exportCSV() {
+        do {
+            let dir = try Export.write(stations: hub.stations, tariff: hub.config?.price ?? TariffConfig())
+            exportStatus = L("Збережено: Завантаження/\(dir.lastPathComponent)", "Saved: Downloads/\(dir.lastPathComponent)")
+            NSWorkspace.shared.activateFileViewerSelecting([dir])
+        } catch {
+            exportStatus = L("Не вдалося: \(error.localizedDescription)", "Failed: \(error.localizedDescription)")
+        }
+    }
+
     // Wired by AppDelegate
     var onOpenConfig: () -> Void = {}
     var onReload: () -> Void = {}
@@ -130,6 +164,8 @@ final class PanelModel: ObservableObject {
         verify = [:]
         confirmClear = false
         cleared = false
+        telegramStatus = nil
+        exportStatus = nil
         dataSize = Paths.dataSize()
         found = Discovery.scan()
         page = .settings

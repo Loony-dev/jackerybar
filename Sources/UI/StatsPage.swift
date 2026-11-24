@@ -8,7 +8,8 @@ struct StatsPage: View {
 
     var body: some View {
         let _ = model.tick
-        let days = st.store.daily(days: model.statsDays)
+        let tariff = model.hub.config?.price ?? TariffConfig()
+        let days = st.store.daily(days: model.statsDays, tariff: tariff)
         let kinds = StatsKind.allCases.filter { $0 != .solar || st.pvSeen }
         let kind = kinds.contains(model.statsKind) ? model.statsKind : .consumed
         let bars = days.map { bar(for: $0, kind: kind) }
@@ -25,7 +26,7 @@ struct StatsPage: View {
                 Chips(items: [(L("7 днів", "7 days"), 7), (L("30 днів", "30 days"), 30)], selection: $model.statsDays)
                 Spacer()
             }
-            Chips(items: kinds.map { ($0.title, $0) }, selection: $model.statsKind)
+            ChipGrid(items: kinds.map { ($0.title, $0) }, selection: $model.statsKind)
 
             VStack(alignment: .leading, spacing: 6) {
                 ZStack {
@@ -75,6 +76,7 @@ struct StatsPage: View {
             case .discharged: d.discharged
             case .imported: d.imported
             case .solar: d.solar
+            case .cost: d.cost
             case .outage: 0
             }
             return .init(label: label, value: v, caption: caption)
@@ -82,7 +84,11 @@ struct StatsPage: View {
     }
 
     private func format(_ v: Double, _ kind: StatsKind) -> String {
-        kind == .outage ? (v < 0.01 ? L("0 год", "0 h") : Fmt.duration(v)) : Fmt.energy(kWh: v)
+        switch kind {
+        case .outage: v < 0.01 ? L("0 год", "0 h") : Fmt.duration(v)
+        case .cost: String(format: "%.2f \(model.hub.config?.price.currency ?? "грн")", v)
+        default: Fmt.energy(kWh: v)
+        }
     }
 
     private func tint(_ kind: StatsKind) -> Color {
@@ -92,6 +98,7 @@ struct StatsPage: View {
         case .imported: .blue
         case .outage: Palette.red
         case .solar: Palette.amber
+        case .cost: .green
         }
     }
 }

@@ -182,8 +182,12 @@ struct SchedulePage: View {
 
     private func source(_ s: RegionSchedule) -> String {
         let when = s.updated.map { Fmt.day($0.timeIntervalSince1970, "dd.MM HH:mm") } ?? "—"
-        let via = s.feed == "frankov" ? "khm_outage_parser" : "Koly Ye"
         let host = URL(string: s.sourceUrl)?.host ?? s.provider
+        if s.feed == "hoe" {
+            return L("Джерело: публікації \(host), розібрані напряму · перевірено \(when). Графік оператора може змінюватися протягом дня.",
+                     "Source: \(host) posts, read directly · checked \(when). The operator may change the schedule during the day.")
+        }
+        let via = s.feed == "frankov" ? "khm_outage_parser" : "Koly Ye"
         return L("Джерело: \(host) через \(via) · оновлено \(when). Графік оператора може змінюватися протягом дня.",
                  "Source: \(host) via \(via) · updated \(when). The operator may change the schedule during the day.")
     }
@@ -276,18 +280,24 @@ private struct SourcesWarning: View {
         VStack(alignment: .leading, spacing: 6) {
             Label(L("Джерела графіка розходяться", "Schedule sources disagree"), systemImage: "exclamationmark.triangle.fill")
                 .font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.amber)
-            ForEach(diffs, id: \.date) { d in
-                let day = d.date == today ? L("Сьогодні", "Today") : d.date == tomorrow ? L("Завтра", "Tomorrow") : d.date
+            ForEach(Array(Set(diffs.map(\.date))).sorted(), id: \.self) { date in
+                let rows = diffs.filter { $0.date == date }
+                let day = date == today ? L("Сьогодні", "Today") : date == tomorrow ? L("Завтра", "Tomorrow") : date
                 VStack(alignment: .leading, spacing: 1) {
                     Text(day).font(.system(size: 11, weight: .medium))
-                    Text("\(d.primaryFeed): " + text(d.primary)).font(.system(size: 11)).foregroundStyle(.secondary)
-                    Text("\(d.secondaryFeed): " + text(d.secondary)).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("\(rows[0].primaryFeed) ✓: " + text(rows[0].primary)).font(.system(size: 11)).foregroundStyle(.secondary)
+                    ForEach(rows, id: \.secondaryFeed) { r in
+                        Text("\(r.secondaryFeed): " + text(r.secondary)).font(.system(size: 11)).foregroundStyle(.tertiary)
+                    }
                 }
                 .monospacedDigit()
             }
             HStack(alignment: .top) {
-                Text(L("Так буває після оновлень графіка протягом дня. Головним лишається \(diffs[0].primaryFeed); звір із публікацією оператора.",
-                       "This happens after intraday updates. \(diffs[0].primaryFeed) stays the main source; compare with the operator’s post."))
+                Text(diffs[0].primaryFeed == "hoe.com.ua"
+                     ? L("Головне джерело — публікація самого обленерго (✓); інші сервіси після оновлень протягом дня іноді помиляються.",
+                         "The main source is the utility’s own post (✓); other services sometimes get intraday updates wrong.")
+                     : L("Так буває після оновлень графіка протягом дня. Головним лишається \(diffs[0].primaryFeed) (✓); звір із публікацією оператора.",
+                         "This happens after intraday updates. \(diffs[0].primaryFeed) (✓) stays the main source; compare with the operator’s post."))
                     .font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 6)
                 if let link {

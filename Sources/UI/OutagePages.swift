@@ -89,6 +89,8 @@ struct OutagesView: View {
             }
             Text(L("за останні 7 днів", "last 7 days")).font(.system(size: 10)).foregroundStyle(.tertiary)
 
+            if let acc = st.planAccuracy(days: 7) { PlanAccuracyCard(a: acc) }
+
             let recent = Array(log.outages.suffix(8).reversed())
             if !recent.isEmpty {
                 VStack(spacing: 0) {

@@ -229,6 +229,8 @@ struct DayEnergy: Equatable {
     var imported = 0.0      // from the grid
     var exported = 0.0      // to the grid
     var solar = 0.0
+    /// Cost of what was taken from the grid, in the tariff's currency.
+    var cost = 0.0
     var hasData = false
 }
 
@@ -292,7 +294,7 @@ final class MetricStore {
     }
 
     /// Energy totals for each of the last `days` days (oldest first), today included.
-    func daily(days: Int, now: Double = Date().timeIntervalSince1970, calendar: Calendar = .current) -> [DayEnergy] {
+    func daily(days: Int, now: Double = Date().timeIntervalSince1970, calendar: Calendar = .current, tariff: TariffConfig? = nil) -> [DayEnergy] {
         let today = calendar.startOfDay(for: Date(timeIntervalSince1970: now))
         return (0..<days).reversed().map { k in
             let start = calendar.date(byAdding: .day, value: -k, to: today)!.timeIntervalSince1970
@@ -308,7 +310,10 @@ final class MetricStore {
                     if v > 0 { d.charged += v * h / 1000 } else { d.discharged += -v * h / 1000 }
                 }
                 if let v = long.value("grid", at: i) {
-                    if v > 0 { d.imported += v * h / 1000 } else { d.exported += -v * h / 1000 }
+                    if v > 0 {
+                        d.imported += v * h / 1000
+                        if let tariff { d.cost += v * h / 1000 * tariff.price(atHour: calendar.component(.hour, from: Date(timeIntervalSince1970: long.times[i]))) }
+                    } else { d.exported += -v * h / 1000 }
                 }
                 if let v = long.value("pv", at: i) { d.solar += max(0, v) * h / 1000 }
                 i += 1

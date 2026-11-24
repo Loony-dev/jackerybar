@@ -28,6 +28,17 @@ final class Station {
     var lowBattery = LowBatteryTracker()
     /// Start times of planned outages already announced ("in 30 min…").
     var announcedPlans: Set<Double> = []
+    /// Smart plugs (devType 6) and CT meters (devType 2–4) attached to the station, by serial.
+    private(set) var plugs: [String: SubDevice] = [:]
+    private(set) var meters: [String: SubDevice] = [:]
+
+    /// Planned outages of this station's queue per day ("yyyy-MM-dd" → spans), last version seen; for plan-vs-fact.
+    var planLog: [String: [ScheduleChange.Span]] = [:]
+
+    /// Charge limit raised by smart charging, to be restored after `until`.
+    struct SmartChargeState: Codable, Equatable { var originalLimit: Int; var until: Double; var reason: String }
+    var smartCharge: SmartChargeState?
+
     /// The last change of this station's queue schedule and when it was noticed.
     var lastScheduleChange: (at: Date, change: ScheduleChange)?
 
@@ -64,11 +75,15 @@ final class Station {
             }
             return .ignored
         }
-        if type == 101 { return .ignored }                 // sub-device lists
         var body = json["body"] as? [String: Any]
         if body == nil { body = json.filter { !Self.meta.contains($0.key) } }
         guard let body, !body.isEmpty else { return .ignored }
-        if let bsn = body["deviceSn"] as? String, bsn != sn, bsn != "system" { return .ignored } // CT / plugs
+        let hasLists = body["plugs"] != nil || body["plug"] != nil || body["cts"] != nil || body["ct"] != nil
+        if type == 101 { return ingestSubDeviceLists(body, at: now) ? .data : .ignored }
+        if hasLists { _ = ingestSubDeviceLists(body, at: now) }          // lists inside a station message
+        if let bsn = body["deviceSn"] as? String, bsn != sn, bsn != "system" {     // one sub-device's update
+            return updateSubDevice(bsn, body, at: now) ? .data : .ignored
+        }
 
         if let v = json["softver"] as? String { softver = v }
         var got = false
@@ -95,6 +110,46 @@ final class Station {
         case let s as String: return Double(s)
         default: return nil
         }
+    }
+
+    // MARK: sub-devices
+
+    private func ingestSubDeviceLists(_ body: [String: Any], at now: Date) -> Bool {
+        var changed = false
+        for key in ["plugs", "plug", "socket", "sockets"] {
+            for item in (body[key] as? [[String: Any]]) ?? [] {
+                guard let s = (item["deviceSn"] ?? item["sn"]) as? String, s != sn else { continue }
+                var d = plugs[s] ?? SubDevice(sn: s, devType: 6)
+                d.merge(item, at: now); plugs[s] = d; changed = true
+            }
+        }
+        for key in ["cts", "ct"] {
+            for item in (body[key] as? [[String: Any]]) ?? [] {
+                guard let s = (item["deviceSn"] ?? item["sn"]) as? String, s != sn else { continue }
+                var d = meters[s] ?? SubDevice(sn: s, devType: (item["devType"] as? Int) ?? 2)
+                d.merge(item, at: now); meters[s] = d; changed = true
+            }
+        }
+        return changed
+    }
+
+    private func updateSubDevice(_ s: String, _ body: [String: Any], at now: Date) -> Bool {
+        if var d = plugs[s] { d.merge(body, at: now); plugs[s] = d; return true }
+        if var d = meters[s] { d.merge(body, at: now); meters[s] = d; return true }
+        let dt = body["devType"] as? Int
+        if dt == 6 || ["switchSta", "sysSwitch", "outPw", "totalEgy"].contains(where: { body[$0] != nil }) {
+            var d = SubDevice(sn: s, devType: 6); d.merge(body, at: now); plugs[s] = d; return true
+        }
+        if [2, 3, 4].contains(dt ?? -1) || ["aPhasePw", "AphasePw", "tPhasePw", "TphasePw", "subType"].contains(where: { body[$0] != nil }) {
+            var d = SubDevice(sn: s, devType: dt ?? 3); d.merge(body, at: now); meters[s] = d; return true
+        }
+        return false
+    }
+
+    /// Marks a plug switch command as sent (shown as pending until the plug reports the new state).
+    func markPlugSent(_ s: String, on: Bool, at now: Date = Date()) {
+        plugs[s]?.pendingOn = on
+        plugs[s]?.pendingAt = now
     }
 
     // MARK: smoothing & sampling
@@ -306,6 +361,9 @@ final class Station {
 
     func save() {
         store.save(raw: Paths.file(.metrics, sn), long: Paths.file(.longterm, sn))
+        if let d = try? JSONEncoder().encode(planLog) { try? d.write(to: Paths.file(.plans, sn), options: .atomic) }
+        if let s = smartCharge, let d = try? JSONEncoder().encode(s) { try? d.write(to: Paths.file(.smartcharge, sn), options: .atomic) }
+        else { try? FileManager.default.removeItem(at: Paths.file(.smartcharge, sn)) }
         snapshotOutages()
         grid.save(to: Paths.file(.outages, sn))
         loss.save(to: Paths.file(.losses, sn))
@@ -313,6 +371,8 @@ final class Station {
 
     func load() {
         store.load(raw: Paths.file(.metrics, sn), long: Paths.file(.longterm, sn))
+        if let d = try? Data(contentsOf: Paths.file(.plans, sn)), let p = try? JSONDecoder().decode([String: [ScheduleChange.Span]].self, from: d) { planLog = p }
+        if let d = try? Data(contentsOf: Paths.file(.smartcharge, sn)) { smartCharge = try? JSONDecoder().decode(SmartChargeState.self, from: d) }
         grid.load(from: Paths.file(.outages, sn))
         loss.load(from: Paths.file(.losses, sn))
     }
@@ -323,6 +383,7 @@ final class Station {
         grid.removeAll()
         loss.reset()
         lowBattery = LowBatteryTracker()
+        planLog = [:]
     }
 
     // MARK: previews & tests
@@ -350,5 +411,52 @@ struct LowBatteryTracker {
         guard let lowest = crossed.min() else { return nil }
         fired.formUnion(crossed)
         return lowest
+    }
+}
+
+/// A smart plug or CT meter reported by the station.
+struct SubDevice: Equatable {
+    var sn: String
+    var devType: Int
+    var name: String?
+    var values: [String: Double] = [:]
+    var commMode: Int?
+    var commState: Int?
+    var lastSeen: Date?
+    var pendingOn: Bool?
+    var pendingAt: Date?
+
+    var isPlug: Bool { devType == 6 }
+    var displayName: String { (name?.isEmpty == false ? name : nil) ?? String(sn.suffix(6)) }
+    /// Plugs can be switched over MQTT only in local mode (commMode 1); cloud plugs only from the Jackery app.
+    var isLocal: Bool { commMode == 1 }
+    var isOn: Bool? { (values["switchSta"] ?? values["sysSwitch"]).map { $0 >= 1 } }
+    var online: Bool { commState.map { $0 == 1 } ?? true }
+
+    /// Plug power, W.
+    var power: Double? { values["outPw"] ?? values["power"] }
+    /// CT: power from the grid (+) / to the grid (−), W — total or the sum of phases.
+    var gridPower: Double? {
+        let fwd = values["tPhasePw"] ?? values["TphasePw"] ?? sum(["aPhasePw", "bPhasePw", "cPhasePw", "AphasePw", "BphasePw", "CphasePw"])
+        let rev = values["tnPhasePw"] ?? values["TnphasePw"] ?? sum(["anPhasePw", "bnPhasePw", "cnPhasePw", "AnphasePw", "BnphasePw", "CnphasePw"])
+        guard fwd != nil || rev != nil else { return nil }
+        return (fwd ?? 0) - (rev ?? 0)
+    }
+    var energyKWh: Double? { values["totalEgy"] ?? values["egy"] }
+
+    private func sum(_ keys: [String]) -> Double? {
+        let v = keys.compactMap { values[$0] }
+        return v.isEmpty ? nil : v.reduce(0, +)
+    }
+
+    mutating func merge(_ item: [String: Any], at now: Date) {
+        if let n = (item["name"] ?? item["scanName"]) as? String, !n.isEmpty { name = n }
+        if let dt = item["devType"] as? Int { devType = dt }
+        for (k, v) in item { if let d = Station.number(v) { values[k] = d } }
+        commMode = values["commMode"].map(Int.init) ?? commMode
+        commState = values["commState"].map(Int.init) ?? commState
+        lastSeen = now
+        if let p = pendingOn, isOn == p { pendingOn = nil; pendingAt = nil }
+        if let at = pendingAt, now.timeIntervalSince(at) > 30 { pendingOn = nil; pendingAt = nil }
     }
 }

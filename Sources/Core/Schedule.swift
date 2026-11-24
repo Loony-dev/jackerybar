@@ -213,7 +213,7 @@ extension Station {
 // MARK: - What changed between two versions of a schedule
 
 struct ScheduleChange: Equatable {
-    struct Span: Equatable {
+    struct Span: Equatable, Codable {
         var from: Int          // minutes from midnight
         var to: Int
         var maybe: Bool
@@ -345,7 +345,13 @@ struct SourceDisagreement: Equatable {
     var primaryFeed: String
     var secondaryFeed: String
 
-    static func feedName(_ f: String?) -> String { f == "frankov" ? "khm_outage_parser" : "Koly Ye" }
+    static func feedName(_ f: String?) -> String {
+        switch f {
+        case "frankov": "khm_outage_parser"
+        case "hoe": "hoe.com.ua"
+        default: "Koly Ye"
+        }
+    }
 
     static func compare(_ a: RegionSchedule, _ b: RegionSchedule, group: String, today: String) -> [SourceDisagreement] {
         a.dates.filter { $0 >= today && b.dates.contains($0) }.compactMap { d in
