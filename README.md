@@ -168,12 +168,24 @@
 ## Вимоги
 
 - macOS 14 Sonoma або новіша, Apple Silicon або Intel.
-- Xcode або Command Line Tools (`xcode-select --install`): потрібен `swiftc`.
+- Для збирання з коду: Xcode або Command Line Tools (`xcode-select --install`), потрібен `swiftc`. Для готового DMG не потрібні.
 - [Homebrew](https://brew.sh), щоб поставити брокер Mosquitto (або будь-який інший MQTT-брокер у мережі).
 - Застосунок Jackery **версії 2.0.0+**: у ньому з’явилися налаштування MQTT.
 - Станції та Mac в одній локальній мережі.
 
 ## Встановлення
+
+### Готова збірка
+
+1. Завантажте `JackeryBar-<версія>.dmg` з [останнього релізу](https://github.com/Loony-dev/jackerybar/releases/latest).
+2. Відкрийте DMG і перетягніть **JackeryBar** у **Програми**.
+3. Перший запуск. Застосунок не підписаний сертифікатом Apple, тому macOS попередить про невідомого розробника. Відкрийте JackeryBar один раз, потім **Системні параметри → Конфіденційність і безпека → «Все одно відкрити»**. Або в Терміналі:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/JackeryBar.app
+   ```
+
+### Збирання з коду
 
 ```bash
 git clone https://github.com/Loony-dev/jackerybar.git
@@ -372,6 +384,8 @@ scripts/
   test.sh              зібрати й запустити тести
   setup-mosquitto.sh   встановлення та налаштування брокера
   screenshots.sh       скриншоти для README (демо-дані)
+  make-dmg.sh          зібрати build/JackeryBar-<версія>.dmg для релізу
+  make-icon.swift      намалювати іконку Resources/AppIcon.icns
 ```
 
 - **Тести:** `./scripts/test.sh`, Xcode не потрібен.

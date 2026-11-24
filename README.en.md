@@ -168,12 +168,24 @@ The Jackery cloud isn't needed. The MQTT client is built in (MQTT 3.1.1 on `Netw
 ## Requirements
 
 - macOS 14 Sonoma or later, Apple Silicon or Intel.
-- Xcode or the Command Line Tools (`xcode-select --install`) for `swiftc`.
+- To build from source: Xcode or the Command Line Tools (`xcode-select --install`) for `swiftc`. Not needed for the DMG.
 - [Homebrew](https://brew.sh) to install the Mosquitto broker (or any other MQTT broker on your network).
 - Jackery app **2.0.0+**, which added the MQTT settings.
 - The stations and the Mac on the same local network.
 
 ## Installation
+
+### Download
+
+1. Download `JackeryBar-<version>.dmg` from the [latest release](https://github.com/Loony-dev/jackerybar/releases/latest).
+2. Open the DMG and drag **JackeryBar** into **Applications**.
+3. First launch. The app isn't signed with an Apple certificate, so macOS warns about an unidentified developer. Open JackeryBar once, then go to **System Settings → Privacy & Security → "Open Anyway"**. Or in Terminal:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/JackeryBar.app
+   ```
+
+### Build from source
 
 ```bash
 git clone https://github.com/Loony-dev/jackerybar.git
@@ -372,6 +384,8 @@ scripts/
   test.sh              build and run the tests
   setup-mosquitto.sh   installs and configures the broker
   screenshots.sh       README screenshots (demo data)
+  make-dmg.sh          build build/JackeryBar-<version>.dmg for a release
+  make-icon.swift      draw the icon Resources/AppIcon.icns
 ```
 
 - **Tests:** `./scripts/test.sh`, no Xcode needed.
