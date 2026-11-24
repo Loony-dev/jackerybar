@@ -20,6 +20,8 @@ final class PopupWindow<Content: View> {
     var isVisible: Bool { window.isVisible }
     /// Called on Escape; return true if handled (popup stays open).
     var onEscape: () -> Bool = { false }
+    /// Optional cap on the window height as a share of the screen (e.g. 0.5 for long forms).
+    var maxHeightFraction: () -> CGFloat? = { nil }
     private let blur = NSVisualEffectView()
     private let tint = NSView()
 
@@ -128,7 +130,8 @@ final class PopupWindow<Content: View> {
         x = min(max(x, visible.minX + margin), visible.maxX - size.width - margin)
         pinnedX = x
         let top = min(anchorRect.minY - gap, visible.maxY - gap)
-        let height = min(size.height, top - visible.minY - margin)
+        var height = min(size.height, top - visible.minY - margin)
+        if let f = maxHeightFraction() { height = min(height, max(320, visible.height * f)) }
         let frame = NSRect(x: x, y: top - height, width: size.width, height: height)
         if window.frame != frame { window.setFrame(frame, display: true) }
         if CommandLine.arguments.contains("--debug") {

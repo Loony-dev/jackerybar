@@ -1,6 +1,7 @@
 // State of the popup: which page is open, page-local choices, the settings form.
 
 import SwiftUI
+import UserNotifications
 
 enum Page: Equatable {
     case main
@@ -96,6 +97,21 @@ final class PanelModel: ObservableObject {
     @Published var telegramStatus: String?
     @Published var exportStatus: String?
     var onTestNotifications: () -> Void = {}
+    /// macOS doesn't allow JackeryBar's notifications (System Settings → Notifications).
+    @Published var notificationsBlocked = false { didSet { layout() } }
+
+    func refreshNotificationStatus() {
+        UNUserNotificationCenter.current().getNotificationSettings { s in
+            let blocked = s.authorizationStatus == .denied || s.alertSetting == .disabled && s.notificationCenterSetting == .disabled
+            DispatchQueue.main.async { self.notificationsBlocked = blocked }
+        }
+    }
+
+    func openNotificationSettings() {
+        let urls = ["x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(Bundle.main.bundleIdentifier ?? "dev.loony.jackerybar")",
+                    "x-apple.systempreferences:com.apple.Notifications-Settings.extension"]
+        for u in urls { if let url = URL(string: u), NSWorkspace.shared.open(url) { return } }
+    }
 
     func findTelegramChat() {
         telegramStatus = L("Шукаю…", "Looking…")
@@ -165,6 +181,7 @@ final class PanelModel: ObservableObject {
         confirmClear = false
         cleared = false
         telegramStatus = nil
+        refreshNotificationStatus()
         exportStatus = nil
         dataSize = Paths.dataSize()
         found = Discovery.scan()

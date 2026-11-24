@@ -552,6 +552,41 @@ test("csv export writes all files") {
     check(raw.hasPrefix("time,battery,grid,ac,pv,soc,temp,wifi") && raw.split(separator: "\n").count == 51)
 }
 
+test("forecast: power late after a planned outage (24.11 22:09, queue 6.2)") {
+    // Real case: planned 18:00–22:00 ended, power still off at 22:09 (came back at 22:09), 33 %, 312 W out.
+    let now = RegionSchedule.date("2026-11-24", "22:09")!
+    let st = Station(config: StationConfig(deviceSn: "HS2C0TEST00001", token: "t"))
+    st.inject(values: ["soc": 33, "socDischgLimit": 10, "socChgLimit": 100, "batOutPw": 312, "swEpsOutPw": 279, "ongridStat": 0, "batNum": 0],
+              net: -312, load: 279, at: now)
+    st.grid.update(false, at: now.timeIntervalSince1970 - 11000); st.grid.update(false, at: now.timeIntervalSince1970 - 10995)
+    func o(_ d: String, _ a: String, _ b: String) -> PlannedOutage {
+        PlannedOutage(start: RegionSchedule.date(d, a)!, end: RegionSchedule.date(d, b)!, maybe: false)
+    }
+    let plan = [o("2026-11-24", "18:00", "22:00"), o("2026-11-25", "06:00", "08:00"), o("2026-11-25", "12:00", "16:00"), o("2026-11-26", "00:00", "02:00")]
+    let f = st.forecasts(plan, now: now)
+    check(f[0] == nil)
+    check(f[1]!.socAtStart > 99 && f[1]!.enough, "06:00 must not be ~1 min: \(f[1]!)")
+    check(f[2]!.enough && f[3]!.enough)
+
+    // A truly unscheduled outage (no planned one recently) stays conservative.
+    let g = st.forecasts([o("2026-11-25", "06:00", "08:00")], now: now)
+    check(!g[0]!.enough && g[0]!.socAtStart < 11, "emergency: drains until the next planned outage")
+
+    // Grid present but the station feeds the load from the battery (self-use): not an outage.
+    st.inject(values: ["soc": 33, "socDischgLimit": 10, "batOutPw": 312, "swEpsOutPw": 279, "ongridStat": 1, "batNum": 0], net: -312, load: 279, at: now)
+    st.grid.update(true, at: now.timeIntervalSince1970); st.grid.update(true, at: now.timeIntervalSince1970 + 5)
+    check(st.forecasts([o("2026-11-25", "06:00", "08:00")], now: now)[0]!.socAtStart > 99)
+}
+
+test("typical charge power ignores ramp-up blips") {
+    let st = Station(config: StationConfig(deviceSn: "HS2C0TEST00001", token: "t"))
+    let now = Date()
+    st.store.record(at: now.addingTimeInterval(-600), values: ["battery": 274])     // one blip
+    check(st.typicalChargeW == 1000, "a single blip → default \(st.typicalChargeW)")
+    for i in 0..<20 { st.store.record(at: now.addingTimeInterval(Double(i - 20) * 12), values: ["battery": 1740]) }
+    check(st.typicalChargeW == 1740, "steady charging wins: \(st.typicalChargeW)")
+}
+
 // MARK: - Address book
 
 test("address normalization and search") {

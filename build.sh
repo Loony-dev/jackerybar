@@ -6,7 +6,7 @@ set -euo pipefail
 cd "${0:A:h}"
 
 APP=build/JackeryBar.app
-rm -rf build && mkdir -p "$APP/Contents/MacOS" build/obj
+rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/obj
 
 for arch in arm64 x86_64; do
   swiftc -O -swift-version 5 -target $arch-apple-macos14 \
@@ -19,12 +19,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleIdentifier</key><string>local.jackerybar</string>
+  <key>CFBundleIdentifier</key><string>dev.loony.jackerybar</string>
   <key>CFBundleName</key><string>JackeryBar</string>
   <key>CFBundleExecutable</key><string>JackeryBar</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>1.1</string>
+  <key>CFBundleVersion</key><string>2</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>CFBundleDevelopmentRegion</key><string>uk</string>
@@ -32,6 +33,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>NSLocalNetworkUsageDescription</key><string>JackeryBar connects to an MQTT broker on your local network to read your Jackery station.</string>
 </dict></plist>
 PLIST
+
+cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 
 # Localized system strings (local-network permission prompt).
 mkdir -p "$APP/Contents/Resources/uk.lproj" "$APP/Contents/Resources/en.lproj"

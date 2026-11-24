@@ -160,13 +160,25 @@ struct PlanForecast: Equatable {
 }
 
 extension Station {
-    /// Charging power to assume between outages: the current one if charging now, otherwise the highest
-    /// seen in the last 24 h, otherwise 800 W.
+    /// Charging power to assume between outages: the current one if charging steadily now, otherwise the
+    /// median of steady charging (≥ 300 W) seen in the last 14 days, otherwise 1 kW. Ramp-up blips right
+    /// after the power comes back (a single 270 W sample) must not count as "the" charging power.
     var typicalChargeW: Double {
-        if isCharging, let n = smoothedNet { return n }
+        if isCharging, let n = smoothedNet, n >= 300 { return n }
         let now = Date().timeIntervalSince1970
-        if let st = store.raw.stats("battery", from: now - 86400, to: now, transform: { $0 }), st.max > 100 { return st.max }
-        return 800
+        var samples: [Double] = []
+        for t in [store.raw, store.long] {
+            for i in t.lowerBound(now - 14 * 86400)..<t.count { if let v = t.value("battery", at: i), v >= 300 { samples.append(v) } }
+        }
+        guard samples.count >= 6 else { return 1000 }
+        samples.sort()
+        return samples[samples.count / 2]
+    }
+
+    /// How late the power usually comes back after a planned outage, hours (learned, 15 min…2 h; 1 h by default).
+    var typicalReturnDelayHours: Double {
+        guard let m = planAccuracy(days: 14)?.endDelayMin, m > 0 else { return 1 }
+        return min(2, max(0.25, m / 60))
     }
 
     /// Steps through the schedule: the battery charges while the grid is on and drains at the current
@@ -179,19 +191,31 @@ extension Station {
         let charge = typicalChargeW
         var soc = soc0
         var t = now
-        // Power is already out without a planned outage covering it (emergency): keep draining until the next one.
-        var unplannedOff = (grid.isOn == false || isDischarging) && !plan.contains { $0.contains(now) }
+        // Power is out right now although no planned outage covers this moment:
+        // - a planned one just ended (power is late to come back): assume it returns after the usual delay;
+        // - otherwise (emergency / unscheduled): conservatively assume it stays off until the next planned outage.
+        let offNow = grid.isOn == false || (grid.isOn == nil && isDischarging)
+        var offUntil: Date? = nil
+        if offNow, !plan.contains(where: { $0.contains(now) }) {
+            if let last = plan.last(where: { $0.end <= now }), now.timeIntervalSince(last.end) < 3 * 3600 {
+                offUntil = max(now, last.end.addingTimeInterval(typicalReturnDelayHours * 3600))
+            } else {
+                offUntil = .distantFuture
+            }
+        }
         return plan.map { o -> PlanForecast? in
             guard o.end > now else { return nil }
             if o.start > t {
-                let h = o.start.timeIntervalSince(t) / 3600
-                if unplannedOff {
-                    soc = max(lo, soc - draw * h / cap * 100)
-                } else if soc < hi {
-                    soc = min(hi, soc + charge * h / cap * 100)
+                // Gap before this outage: drain while the power is still off, charge once it's back.
+                let offEnd = min(offUntil ?? t, o.start)
+                if offEnd > t {
+                    soc = max(lo, soc - draw * offEnd.timeIntervalSince(t) / 3600 / cap * 100)
+                    t = offEnd
                 }
+                let h = o.start.timeIntervalSince(t) / 3600
+                if h > 0, soc < hi { soc = min(hi, soc + charge * h / cap * 100) }
             }
-            unplannedOff = false
+            offUntil = nil
             let from = max(o.start, now)
             let atStart = soc
             let remaining = o.end.timeIntervalSince(from)

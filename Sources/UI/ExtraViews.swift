@@ -117,3 +117,23 @@ struct DevicesCard: View {
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
+
+/// Shown on the main page while macOS blocks JackeryBar's notifications.
+struct NotificationsBlockedBanner: View {
+    let open: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bell.slash.fill").foregroundStyle(Palette.red)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(L("Сповіщення вимкнені в macOS", "Notifications are off in macOS")).font(.system(size: 12, weight: .semibold))
+                Text(L("не прийде ні про світло, ні про заряд", "no alerts about power or charge"))
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Button(L("Увімкнути", "Turn on"), action: open).controlSize(.small)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(Palette.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}

@@ -9,12 +9,40 @@ struct PanelView: View {
 
     var body: some View {
         let _ = model.tick
-        if measuring || Snapshot.active {
+        if model.page == .settings {
+            settingsLayout
+        } else if measuring || Snapshot.active {
             content
         } else {
             ScrollView(.vertical) { content }
                 .scrollIndicators(.automatic)
                 .scrollBounceBehavior(.basedOnSize)
+        }
+    }
+
+    /// Settings: title on top and Save at the bottom stay put; only the form scrolls.
+    @ViewBuilder
+    private var settingsLayout: some View {
+        if measuring || Snapshot.active {
+            VStack(alignment: .leading, spacing: 14) {
+                SettingsHeader(model: model)
+                SettingsView(model: model)
+                SettingsFooter(model: model)
+            }
+            .padding(16)
+            .frame(width: 344)
+        } else {
+            VStack(spacing: 0) {
+                SettingsHeader(model: model).padding([.horizontal, .top], 16).padding(.bottom, 10)
+                Divider().opacity(0.6)
+                // No visible scroller: with "always show scroll bars" it eats 15 pt and pushes the form off-centre.
+                ScrollView(.vertical) { SettingsView(model: model).padding(16) }
+                    .scrollIndicators(.never)
+                    .scrollBounceBehavior(.basedOnSize)
+                Divider().opacity(0.6)
+                SettingsFooter(model: model).padding(.horizontal, 16).padding(.vertical, 12)
+            }
+            .frame(width: 344)
         }
     }
 
@@ -30,7 +58,7 @@ struct PanelView: View {
     private var page: some View {
         switch model.page {
         case .settings:
-            SettingsView(model: model)
+            settingsLayout
         case .metric(let m) where model.station != nil:
             MetricPage(model: model, st: model.station!, metric: m)
         case .outages where model.station != nil:
@@ -58,6 +86,9 @@ struct PanelView: View {
             Group {
                 if model.hub.stations.count > 1 {
                     StationSwitcher(stations: model.hub.stations, selected: st.sn) { model.hub.select($0) }
+                }
+                if model.notificationsBlocked {
+                    NotificationsBlockedBanner(open: model.openNotificationSettings)
                 }
                 Header(st: st, error: model.hub.connError, demo: model.hub.isDemo && !Snapshot.active)
                 Hero(st: st, open: { model.open(.metric($0)) })

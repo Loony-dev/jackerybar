@@ -15,7 +15,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ n: Notification) {
         handleSigterm()
         UNUserNotificationCenter.current().delegate = self
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, err in
+            Self.log("notifications: requestAuthorization granted=\(granted) error=\(err.map { "\($0)" } ?? "-")")
+            UNUserNotificationCenter.current().getNotificationSettings { s in
+                Self.log("notifications: authorization=\(s.authorizationStatus.rawValue) alert=\(s.alertSetting.rawValue) style=\(s.alertStyle.rawValue) center=\(s.notificationCenterSetting.rawValue)")
+            }
+        }
+        panel.refreshNotificationStatus()
+        if CommandLine.arguments.contains("--test-notify") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.sendTestNotifications() }
+        }
         installEditMenu()
 
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -44,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self?.apply(cfg)
             return nil
         }
+        popup.maxHeightFraction = { [panel] in panel.page == .settings ? 0.5 : nil }
         popup.onEscape = { [weak self] in
             guard let self, self.panel.page != .main else { return false }
             self.panel.back()
@@ -65,7 +75,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             apply(Config.load())
         }
         if CommandLine.arguments.contains("--open") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.togglePopup() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                self.togglePopup()
+                if CommandLine.arguments.contains("--settings") { self.panel.openSettings() }
+            }
         }
         redrawTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.redraw() }
     }
@@ -99,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         } else {
             panel.page = .main
             panel.confirming = nil
+            panel.refreshNotificationStatus()
             redraw()
             popup.show(below: button)
         }
@@ -241,7 +255,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func post(_ c: UNMutableNotificationContent, station st: Station? = nil, page: String = "main") {
         c.sound = .default
         if let st { c.userInfo = ["sn": st.sn, "page": page] }
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil)) { err in
+            Self.log("notification '\(c.title)': " + (err.map { "FAILED \($0)" } ?? "delivered to the system"))
+        }
         // Same text to Telegram, if set up.
         if let tg = hub.config?.telegram, tg.isUsable {
             Telegram.send(tg, text: "\(c.title)\n\(c.body)")
@@ -268,6 +284,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if !self.popup.isVisible, let b = self.item.button { self.redraw(); self.popup.show(below: b) }
         }
         done()
+    }
+
+    /// Diagnostics for --debug runs.
+    static func log(_ s: String) {
+        guard CommandLine.arguments.contains("--debug") else { return }
+        FileHandle.standardError.write("[app] \(s)\n".data(using: .utf8)!)
     }
 
     /// Hidden main menu so ⌘X/⌘C/⌘V/⌘A/⌘Z work in the settings text fields.

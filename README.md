@@ -2,6 +2,8 @@
   <b>🇺🇦 Українська</b> · <a href="README.en.md">🇬🇧 English</a>
 </p>
 
+<p align="center"><img src="docs/icon.png" width="128" height="128" alt="JackeryBar"></p>
+
 <h1 align="center">JackeryBar</h1>
 
 <p align="center">

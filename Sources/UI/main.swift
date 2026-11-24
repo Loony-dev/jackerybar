@@ -42,6 +42,7 @@ if let i = args.firstIndex(of: "--render-panel"), i + 1 < args.count {
                                           ScheduleChange.diff(old: older, new: sched, group: "1.1", today: RegionSchedule.dayString()))
     }
     let m = PanelModel(hub: hub)
+    if args.contains("blocked") { m.notificationsBlocked = true }
     if let k = args.firstIndex(of: "metric"), k + 1 < args.count, let metric = Metric(rawValue: args[k + 1]) {
         m.page = .metric(metric)
         if let r = args.firstIndex(of: "range"), r + 1 < args.count, let s = Double(args[r + 1]) { m.range = s }

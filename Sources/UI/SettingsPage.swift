@@ -142,7 +142,7 @@ struct SettingsDraft {
                                smoothingSeconds: smoothingSeconds,
                                lowBattery: LowBatteryConfig(enabled: alertsOn, thresholds: Array(Set(levels)).sorted(by: >)),
                                planAlerts: PlanAlertConfig(enabled: planOn, minutesBefore: minutes, changes: planChanges),
-                               smartCharge: SmartChargeConfig(enabled: smartOn, lookaheadHours: hours ?? 6),
+                               smartCharge: SmartChargeConfig(enabled: smartOn, lookaheadHours: hours),
                                telegram: TelegramConfig(enabled: tgOn, token: tgToken.trimmingCharacters(in: .whitespaces),
                                                         chatId: tgChat.trimmingCharacters(in: .whitespaces)),
                                tariff: TariffConfig(day: day, night: night)))
@@ -156,13 +156,49 @@ struct SettingsError: Error {
 
 // MARK: - View
 
+/// Settings title; pinned above the scrolling form.
+struct SettingsHeader: View {
+    @ObservedObject var model: PanelModel
+    var body: some View { PageHeader(title: L("Налаштування", "Settings"), back: model.back) }
+}
+
+/// Error message and Cancel / Save; pinned below the scrolling form so they're always visible.
+struct SettingsFooter: View {
+    @ObservedObject var model: PanelModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let err = model.settingsError {
+                Label(err, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Palette.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                Button("config.json") { model.onOpenConfig() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .help(L("Відкрити файл налаштувань у редакторі", "Open the config file in an editor"))
+                Spacer()
+                Button(L("Скасувати", "Cancel")) { model.back() }
+                    .keyboardShortcut(.cancelAction)
+                Button(L("Зберегти", "Save")) { model.saveSettings() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
+            .controlSize(.regular)
+        }
+        .frame(width: 312, alignment: .leading)
+    }
+}
+
+/// The form itself (cards only; header and footer are separate).
 struct SettingsView: View {
     @ObservedObject var model: PanelModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PageHeader(title: L("Налаштування", "Settings"), back: model.back)
-
             Card(title: L("MQTT-брокер", "MQTT broker"), icon: "server.rack") {
                 HStack(spacing: 8) {
                     Field(label: L("Адреса", "Host"), text: $model.draft.host, prompt: "192.168.1.10")
@@ -178,6 +214,20 @@ struct SettingsView: View {
             stationsCard
 
             Card(title: L("Сповіщення", "Notifications"), icon: "bell") {
+                if model.notificationsBlocked {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(L("macOS блокує сповіщення JackeryBar", "macOS is blocking JackeryBar’s notifications"),
+                              systemImage: "bell.slash.fill")
+                            .font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.red)
+                        Text(L("Системні налаштування → Сповіщення → JackeryBar → увімкни «Дозволити сповіщення».",
+                               "System Settings → Notifications → JackeryBar → turn on “Allow notifications”."))
+                            .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        Button(L("Відкрити налаштування macOS", "Open macOS settings"), action: model.openNotificationSettings)
+                            .controlSize(.small)
+                    }
+                    .padding(9)
+                    .background(Palette.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
                 HStack {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(L("Низький заряд", "Low battery")).font(.system(size: 12))
@@ -213,7 +263,10 @@ struct SettingsView: View {
                 Text(L("Сповіщення про зникнення й появу світла та аварійні відключення працюють завжди.",
                        "Power outage / power back and emergency-outage notifications are always on."))
                     .font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
-                Button(L("Надіслати тестові сповіщення", "Send test notifications"), action: model.onTestNotifications)
+                Button(L("Надіслати тестові сповіщення", "Send test notifications")) {
+                    // Blocked by macOS: sending would silently go nowhere, so open the switch instead.
+                    if model.notificationsBlocked { model.openNotificationSettings() } else { model.onTestNotifications() }
+                }
                     .controlSize(.small)
             }
 
@@ -228,29 +281,8 @@ struct SettingsView: View {
             }
 
             dataCard
-
-            if let err = model.settingsError {
-                Label(err, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Palette.red)
-            }
-
-            HStack(spacing: 8) {
-                Button("config.json") { model.onOpenConfig() }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .help(L("Відкрити файл налаштувань у редакторі", "Open the config file in an editor"))
-                Spacer()
-                Button(L("Скасувати", "Cancel")) { model.back() }
-                    .keyboardShortcut(.cancelAction)
-                Button(L("Зберегти", "Save")) { model.saveSettings() }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-            }
-            .controlSize(.regular)
         }
-        .frame(width: 312, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: stations
